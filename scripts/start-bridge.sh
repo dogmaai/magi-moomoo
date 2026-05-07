@@ -2,17 +2,19 @@
 # start-bridge.sh — Start moomoo-bridge + ngrok, then register URL in BigQuery.
 #
 # Usage (on TIALA):
-#   cd ~/magi-bridge && bash start-bridge.sh
+#   cd ~/magi-moomoo && bash scripts/start-bridge.sh
 #
 # Prerequisites:
-#   - python3 with flask, google-cloud-bigquery
+#   - python3 with moomoo-api, flask, google-cloud-bigquery
+#     pip install -r bridge/requirements.txt google-cloud-bigquery
+#   - MooMoo OpenD running on localhost:11111
 #   - ngrok installed and authenticated
 #   - GCP credentials (ADC or GOOGLE_APPLICATION_CREDENTIALS)
 
 set -e
 
 BRIDGE_PORT=11436
-BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-moomoo-bridge.py}"
+BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- 1. Start moomoo-bridge if not running ---
