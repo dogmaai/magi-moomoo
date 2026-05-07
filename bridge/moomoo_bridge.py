@@ -483,6 +483,66 @@ def get_quote():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/bars", methods=["GET"])
+def get_bars():
+    """
+    Get historical K-line (candlestick) data for a symbol via OpenD.
+
+    Query params:
+        symbol      str   e.g. "AAPL"
+        limit       int   number of bars (default 21, max 1000)
+        timeframe   str   "1Day" (default), "1Min", "5Min", "15Min", "60Min"
+
+    Response JSON:
+        symbol  str
+        bars    list of {t, o, h, l, c, v}
+    """
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol query param required"}), 400
+
+    limit = min(int(request.args.get("limit", 21)), 1000)
+    code = _to_moomoo_code(symbol)
+
+    # Calculate date range
+    from datetime import datetime, timedelta
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+
+    try:
+        quote_ctx = _get_quote_ctx()
+        ret, data, _ = quote_ctx.request_history_kline(
+            code,
+            start=start_date,
+            end=end_date,
+            max_count=limit,
+        )
+
+        if ret != RET_OK:
+            log.error("[BARS] request_history_kline failed: %s", data)
+            _reset_quote_ctx()
+            return jsonify({"error": str(data)}), 500
+
+        bars = []
+        for _, row in data.iterrows():
+            bars.append({
+                "t": str(row.get("time_key", "")),
+                "o": float(row.get("open", 0)),
+                "h": float(row.get("high", 0)),
+                "l": float(row.get("low", 0)),
+                "c": float(row.get("close", 0)),
+                "v": int(row.get("volume", 0)),
+            })
+
+        log.info("[BARS] %s: returned %d bars", symbol, len(bars))
+        return jsonify({"symbol": symbol, "bars": bars})
+
+    except Exception as e:
+        log.exception("[BARS] Exception")
+        _reset_quote_ctx()
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------

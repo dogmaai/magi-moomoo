@@ -123,6 +123,20 @@ app.get('/trade/quote', async (req, res) => {
   }
 });
 
+// ヒストリカルK線データ取得
+app.get('/trade/bars', async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    const limit = req.query.limit || 21;
+    if (!symbol) return res.status(400).json({ error: 'symbol query param required' });
+    const result = await proxyToBridge(`/bars?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] bars error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
 // === Legacy Phase 1 Endpoints (kept for backward compatibility) ===
 
 // 残高確認 (Phase 1 - legacy)
