@@ -1,0 +1,2 @@
+moomoo-api>=2.0.0
+flask>=3.0.0

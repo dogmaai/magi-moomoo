@@ -99,6 +99,30 @@ app.get('/trade/account_info', async (req, res) => {
   }
 });
 
+// 注文ステータス確認
+app.get('/trade/order/:orderId', async (req, res) => {
+  try {
+    const result = await proxyToBridge(`/order/${req.params.orderId}`);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] order_status error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
+// 気配値取得
+app.get('/trade/quote', async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    if (!symbol) return res.status(400).json({ error: 'symbol query param required' });
+    const result = await proxyToBridge(`/quote?symbol=${encodeURIComponent(symbol)}`);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] quote error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
 // === Legacy Phase 1 Endpoints (kept for backward compatibility) ===
 
 // 残高確認 (Phase 1 - legacy)
