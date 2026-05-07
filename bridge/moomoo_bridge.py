@@ -235,6 +235,7 @@ def place_order():
             trd_side=trd_side,
             order_type=order_type,
             trd_env=TRD_ENV,
+            fill_outside_rth=True,
             remark=remark or None,
         )
 
