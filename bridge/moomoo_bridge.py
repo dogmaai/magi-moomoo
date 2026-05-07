@@ -72,6 +72,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("moomoo-bridge")
 
+
+def _safe_float(val, default=0.0):
+    """Convert a value to float, returning *default* for 'N/A' or invalid."""
+    if val is None or val == "N/A" or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
@@ -228,8 +238,8 @@ def place_order():
         # data is a DataFrame with order details
         row = data.iloc[0]
         order_id = str(row.get("order_id", ""))
-        dealt_avg_price = float(row.get("dealt_avg_price", 0)) or None
-        dealt_qty = float(row.get("dealt_qty", 0)) or None
+        dealt_avg_price = _safe_float(row.get("dealt_avg_price")) or None
+        dealt_qty = _safe_float(row.get("dealt_qty")) or None
         order_status = str(row.get("order_status", ""))
 
         log.info(
@@ -272,8 +282,8 @@ def _poll_order_fill(trd_ctx, order_id: str, max_wait: int = 3):
             )
             if ret == RET_OK and len(data) > 0:
                 row = data.iloc[0]
-                price = float(row.get("dealt_avg_price", 0)) or None
-                qty = float(row.get("dealt_qty", 0)) or None
+                price = _safe_float(row.get("dealt_avg_price")) or None
+                qty = _safe_float(row.get("dealt_qty")) or None
                 status = str(row.get("order_status", ""))
                 if price:
                     return price, qty, status
@@ -302,12 +312,12 @@ def get_positions():
 
         positions = []
         for _, row in data.iterrows():
-            qty = float(row.get("qty", 0))
+            qty = _safe_float(row.get("qty"))
             if qty == 0:
                 continue  # skip closed positions
-            nominal_price = float(row.get("nominal_price", 0))
-            cost_price = float(row.get("cost_price", 0))
-            market_val = float(row.get("market_val", 0))
+            nominal_price = _safe_float(row.get("nominal_price"))
+            cost_price = _safe_float(row.get("cost_price"))
+            market_val = _safe_float(row.get("market_val"))
             unrealized_pnl = market_val - (cost_price * abs(qty)) if cost_price else 0
 
             positions.append({
@@ -319,7 +329,7 @@ def get_positions():
                 "unrealized_pnl": round(unrealized_pnl, 2),
                 "market_value": market_val,
                 "side": str(row.get("position_side", "")),
-                "can_sell_qty": float(row.get("can_sell_qty", 0)),
+                "can_sell_qty": _safe_float(row.get("can_sell_qty")),
             })
 
         log.info("[POSITIONS] Returned %d positions", len(positions))
@@ -355,11 +365,11 @@ def get_account_info():
             return jsonify({"error": str(data)}), 500
 
         row = data.iloc[0]
-        total_assets = float(row.get("total_assets", 0))
-        cash = float(row.get("us_cash", 0)) or float(row.get("cash", 0))
-        market_val = float(row.get("market_val", 0))
-        buying_power = float(row.get("power", 0))
-        unrealized_pl = float(row.get("unrealized_pl", 0))
+        total_assets = _safe_float(row.get("total_assets"))
+        cash = _safe_float(row.get("us_cash")) or _safe_float(row.get("cash"))
+        market_val = _safe_float(row.get("market_val"))
+        buying_power = _safe_float(row.get("power"))
+        unrealized_pl = _safe_float(row.get("unrealized_pl"))
         risk_status = str(row.get("risk_status", ""))
 
         result = {
@@ -415,11 +425,11 @@ def get_order_status(order_id):
         return jsonify({
             "order_id": str(row.get("order_id", "")),
             "status": str(row.get("order_status", "")),
-            "filled_price": float(row.get("dealt_avg_price", 0)) or None,
-            "filled_qty": float(row.get("dealt_qty", 0)) or None,
+            "filled_price": _safe_float(row.get("dealt_avg_price")) or None,
+            "filled_qty": _safe_float(row.get("dealt_qty")) or None,
             "symbol": _to_magi_symbol(str(row.get("code", ""))),
             "side": str(row.get("trd_side", "")),
-            "qty": float(row.get("qty", 0)),
+            "qty": _safe_float(row.get("qty")),
             "create_time": str(row.get("create_time", "")),
         })
 
@@ -466,14 +476,14 @@ def get_quote():
         row = data.iloc[0]
         return jsonify({
             "symbol": symbol,
-            "last_price": float(row.get("last_price", 0)),
-            "bid": float(row.get("bid_price", 0)),
-            "ask": float(row.get("ask_price", 0)),
-            "volume": int(row.get("volume", 0)),
-            "open": float(row.get("open_price", 0)),
-            "high": float(row.get("high_price", 0)),
-            "low": float(row.get("low_price", 0)),
-            "prev_close": float(row.get("prev_close_price", 0)),
+            "last_price": _safe_float(row.get("last_price")),
+            "bid": _safe_float(row.get("bid_price")),
+            "ask": _safe_float(row.get("ask_price")),
+            "volume": int(_safe_float(row.get("volume"))),
+            "open": _safe_float(row.get("open_price")),
+            "high": _safe_float(row.get("high_price")),
+            "low": _safe_float(row.get("low_price")),
+            "prev_close": _safe_float(row.get("prev_close_price")),
             "timestamp": str(row.get("update_time", "")),
         })
 
@@ -527,11 +537,11 @@ def get_bars():
         for _, row in data.iterrows():
             bars.append({
                 "t": str(row.get("time_key", "")),
-                "o": float(row.get("open", 0)),
-                "h": float(row.get("high", 0)),
-                "l": float(row.get("low", 0)),
-                "c": float(row.get("close", 0)),
-                "v": int(row.get("volume", 0)),
+                "o": _safe_float(row.get("open")),
+                "h": _safe_float(row.get("high")),
+                "l": _safe_float(row.get("low")),
+                "c": _safe_float(row.get("close")),
+                "v": int(_safe_float(row.get("volume"))),
             })
 
         log.info("[BARS] %s: returned %d bars", symbol, len(bars))
