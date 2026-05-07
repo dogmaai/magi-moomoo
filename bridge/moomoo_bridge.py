@@ -33,6 +33,7 @@ from moomoo import (
     RET_OK,
     SecurityFirm,
     SubType,
+    KLType,
 )
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,13 @@ ORDER_TYPE_MAP = {
 TRD_SIDE_MAP = {
     "BUY": TrdSide.BUY,
     "SELL": TrdSide.SELL,
+}
+KTYPE_MAP = {
+    "1Day": KLType.K_DAY,
+    "1Min": KLType.K_1M,
+    "5Min": KLType.K_5M,
+    "15Min": KLType.K_15M,
+    "60Min": KLType.K_60M,
 }
 
 logging.basicConfig(
@@ -512,6 +520,8 @@ def get_bars():
         return jsonify({"error": "symbol query param required"}), 400
 
     limit = min(int(request.args.get("limit", 21)), 1000)
+    timeframe = request.args.get("timeframe", "1Day")
+    ktype = KTYPE_MAP.get(timeframe, KLType.K_DAY)
     code = _to_moomoo_code(symbol)
 
     # Calculate date range
@@ -525,6 +535,7 @@ def get_bars():
             code,
             start=start_date,
             end=end_date,
+            ktype=ktype,
             max_count=limit,
         )
 
