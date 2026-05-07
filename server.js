@@ -129,7 +129,8 @@ app.get('/trade/bars', async (req, res) => {
     const symbol = req.query.symbol;
     const limit = req.query.limit || 21;
     if (!symbol) return res.status(400).json({ error: 'symbol query param required' });
-    const result = await proxyToBridge(`/bars?symbol=${encodeURIComponent(symbol)}&limit=${limit}`);
+    const timeframe = req.query.timeframe || '1Day';
+    const result = await proxyToBridge(`/bars?symbol=${encodeURIComponent(symbol)}&limit=${limit}&timeframe=${encodeURIComponent(timeframe)}`);
     res.status(result.status).json(result.body);
   } catch (e) {
     console.error('[PROXY] bars error:', e.message);
