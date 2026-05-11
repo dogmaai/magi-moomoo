@@ -320,7 +320,9 @@ def get_positions():
     """
     try:
         trd_ctx = _get_trd_ctx()
-        ret, data = trd_ctx.position_list_query(trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID)
+        ret, data = trd_ctx.position_list_query(
+            trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
+        )
 
         if ret != RET_OK:
             log.error("[POSITIONS] position_list_query failed: %s", data)
@@ -374,7 +376,9 @@ def get_account_info():
     """
     try:
         trd_ctx = _get_trd_ctx()
-        ret, data = trd_ctx.accinfo_query(trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID)
+        ret, data = trd_ctx.accinfo_query(
+            trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
+        )
 
         if ret != RET_OK:
             log.error("[ACCOUNT] accinfo_query failed: %s", data)
