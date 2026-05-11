@@ -57,6 +57,12 @@ TRD_MARKET = TRD_MARKET_MAP.get(os.environ.get("TRD_MARKET", "US"), TrdMarket.US
 # Paper trading only — hardcoded for safety
 TRD_ENV = TrdEnv.SIMULATE
 
+# Optional: pin a specific SIMULATE account by ID.
+# Without this the SDK uses acc_index=0 which may pick the wrong
+# paper-trading account (e.g. $1M default instead of user's $50K reset).
+# Set MOOMOO_ACC_ID in the environment to the desired acc_id integer.
+MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
+
 ORDER_TYPE_MAP = {
     "MARKET": OrderType.MARKET,
     "NORMAL": OrderType.NORMAL,
@@ -235,6 +241,7 @@ def place_order():
             trd_side=trd_side,
             order_type=order_type,
             trd_env=TRD_ENV,
+            acc_id=MOOMOO_ACC_ID,
             fill_outside_rth=True,
             remark=remark or None,
         )
@@ -288,6 +295,7 @@ def _poll_order_fill(trd_ctx, order_id: str, max_wait: int = 3):
             ret, data = trd_ctx.order_list_query(
                 order_id=order_id,
                 trd_env=TRD_ENV,
+                acc_id=MOOMOO_ACC_ID,
             )
             if ret == RET_OK and len(data) > 0:
                 row = data.iloc[0]
@@ -312,7 +320,7 @@ def get_positions():
     """
     try:
         trd_ctx = _get_trd_ctx()
-        ret, data = trd_ctx.position_list_query(trd_env=TRD_ENV)
+        ret, data = trd_ctx.position_list_query(trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID)
 
         if ret != RET_OK:
             log.error("[POSITIONS] position_list_query failed: %s", data)
@@ -366,7 +374,7 @@ def get_account_info():
     """
     try:
         trd_ctx = _get_trd_ctx()
-        ret, data = trd_ctx.accinfo_query(trd_env=TRD_ENV)
+        ret, data = trd_ctx.accinfo_query(trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID)
 
         if ret != RET_OK:
             log.error("[ACCOUNT] accinfo_query failed: %s", data)
@@ -420,6 +428,7 @@ def get_order_status(order_id):
         ret, data = trd_ctx.order_list_query(
             order_id=order_id,
             trd_env=TRD_ENV,
+            acc_id=MOOMOO_ACC_ID,
         )
 
         if ret != RET_OK:
@@ -565,11 +574,52 @@ def get_bars():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/accounts", methods=["GET"])
+def list_accounts():
+    """
+    List all available SIMULATE trading accounts.
+    Use this to find the correct acc_id to set in MOOMOO_ACC_ID.
+    """
+    try:
+        trd_ctx = _get_trd_ctx()
+        ret, data = trd_ctx.get_acc_list()
+
+        if ret != RET_OK:
+            log.error("[ACCOUNTS] get_acc_list failed: %s", data)
+            _reset_trd_ctx()
+            return jsonify({"error": str(data)}), 500
+
+        accounts = []
+        for _, row in data.iterrows():
+            trd_env = str(row.get("trd_env", ""))
+            if trd_env != "SIMULATE":
+                continue
+            accounts.append({
+                "acc_id": int(row.get("acc_id", 0)),
+                "trd_env": trd_env,
+                "acc_type": str(row.get("acc_type", "")),
+                "sim_acc_type": str(row.get("sim_acc_type", "")),
+                "trdmarket_auth": str(row.get("trdmarket_auth", "")),
+            })
+
+        log.info("[ACCOUNTS] Found %d SIMULATE accounts", len(accounts))
+        return jsonify({
+            "accounts": accounts,
+            "current_acc_id": MOOMOO_ACC_ID,
+            "note": "Set MOOMOO_ACC_ID env var to pin a specific account",
+        })
+
+    except Exception as e:
+        log.exception("[ACCOUNTS] Exception")
+        _reset_trd_ctx()
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("BRIDGE_PORT", "11436"))
     log.info("Starting moomoo-bridge on port %d", port)
-    log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE", OPEND_HOST, OPEND_PORT, TRD_MARKET)
+    log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: %s", OPEND_HOST, OPEND_PORT, TRD_MARKET, MOOMOO_ACC_ID or 'auto')
     app.run(host="0.0.0.0", port=port, debug=False)

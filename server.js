@@ -138,6 +138,17 @@ app.get('/trade/bars', async (req, res) => {
   }
 });
 
+// アカウント一覧（SIMULATE accounts discovery）
+app.get('/trade/accounts', async (req, res) => {
+  try {
+    const result = await proxyToBridge('/accounts');
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] accounts error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
 // === Legacy Phase 1 Endpoints (kept for backward compatibility) ===
 
 // 残高確認 (Phase 1 - legacy)
