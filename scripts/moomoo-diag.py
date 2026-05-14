@@ -17,7 +17,7 @@ Usage:
     python3 scripts/moomoo-diag.py --host 127.0.0.1 --port 11111
 
     # Specify account ID:
-    python3 scripts/moomoo-diag.py --acc-id 97585
+    python3 scripts/moomoo-diag.py --acc-id 1302593
 """
 
 import argparse

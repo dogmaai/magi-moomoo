@@ -50,7 +50,7 @@ bash scripts/moomoo-check-bridge.sh
 
 ### Run full diagnostics (local OpenD)
 ```bash
-python3 scripts/moomoo-diag.py --acc-id 97585
+python3 scripts/moomoo-diag.py --acc-id 1302593
 ```
 
 ### Run diagnostics via tunnel
@@ -80,7 +80,7 @@ python3 scripts/moomoo-liquidate.py
 
 | Variable | Default | Description |
 |---|---|---|
-| `MOOMOO_ACC_ID` | `97585` | SIMULATE account ID (STOCK account) |
+| `MOOMOO_ACC_ID` | `1302593` | SIMULATE account ID (MARGIN account) |
 | `OPEND_HOST` | `127.0.0.1` | OpenD TCP host |
 | `OPEND_PORT` | `11111` | OpenD TCP port |
 | `BRIDGE_PORT` | `11436` | Bridge HTTP port |
