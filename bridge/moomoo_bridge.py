@@ -23,6 +23,7 @@ import os
 import time
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
 from moomoo import (
     OpenSecTradeContext,
@@ -230,9 +231,7 @@ def place_order():
     # at the last traded price so paper-trading orders always go through.
     auto_limit = False
     if order_type == OrderType.MARKET:
-        now_et = datetime.now(timezone.utc).astimezone(
-            timezone(timedelta(hours=-4))
-        )
+        now_et = datetime.now(ZoneInfo("America/New_York"))
         hour, minute = now_et.hour, now_et.minute
         in_rth = (hour == 9 and minute >= 30) or (10 <= hour <= 15) or (hour == 16 and minute == 0)
         weekday = now_et.weekday()  # 0=Mon .. 6=Sun
