@@ -20,7 +20,7 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
-# Pin the correct SIMULATE account (STOCK).
+# Pin the correct SIMULATE account (MARGIN).
 # Use /accounts endpoint to discover available acc_ids.
 export MOOMOO_ACC_ID="${MOOMOO_ACC_ID:-1302593}"
 
