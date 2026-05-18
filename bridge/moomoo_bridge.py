@@ -61,9 +61,9 @@ TRD_ENV = TrdEnv.SIMULATE
 
 # Pin a specific SIMULATE account by ID.
 # Without this the SDK uses acc_index=0 which may pick the wrong
-# paper-trading account (e.g. $1M default instead of user's $50K reset).
-# Override via MOOMOO_ACC_ID env var if needed.
-MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "182729395"))
+# paper-trading account.
+# Set MOOMOO_ACC_ID in the environment (e.g. via Secret Manager).
+MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
 
 ORDER_TYPE_MAP = {
     "MARKET": OrderType.MARKET,
