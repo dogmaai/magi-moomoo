@@ -60,10 +60,20 @@ TRD_MARKET = TRD_MARKET_MAP.get(os.environ.get("TRD_MARKET", "US"), TrdMarket.US
 TRD_ENV = TrdEnv.SIMULATE
 
 # Pin a specific SIMULATE account by ID.
-# Without this the SDK uses acc_index=0 which may pick the wrong
-# paper-trading account.
-# Set MOOMOO_ACC_ID in the environment (e.g. via Secret Manager).
+# If MOOMOO_ACC_ID is 0 (default), the bridge will auto-discover the
+# correct US STOCK_AND_OPTION SIMULATE account on first trade context use.
+# Override via MOOMOO_ACC_ID env var to skip auto-discovery.
 MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
+
+# Target sim_acc_type for auto-discovery (per MooMoo support guidance).
+# US market → STOCK_AND_OPTION, HK market → STOCK
+_TARGET_SIM_TYPE = {
+    "US": "STOCK_AND_OPTION",
+    "HK": "STOCK",
+}
+_SIM_ACC_TYPE_TARGET = _TARGET_SIM_TYPE.get(
+    os.environ.get("TRD_MARKET", "US"), "STOCK_AND_OPTION"
+)
 
 ORDER_TYPE_MAP = {
     "MARKET": OrderType.MARKET,
@@ -107,8 +117,63 @@ _trd_ctx = None
 _quote_ctx = None
 
 
+def _discover_simulate_acc_id(trd_ctx):
+    """Auto-discover the correct SIMULATE account for the configured market.
+
+    Queries get_acc_list() and selects the SIMULATE account whose
+    sim_acc_type matches the target (e.g. STOCK_AND_OPTION for US).
+    Returns the acc_id (int) or 0 if discovery fails.
+    """
+    global MOOMOO_ACC_ID
+    try:
+        ret, data = trd_ctx.get_acc_list()
+        if ret != RET_OK:
+            log.warning("[ACC_DISCOVERY] get_acc_list failed: %s", data)
+            return 0
+
+        candidates = []
+        for _, row in data.iterrows():
+            trd_env = str(row.get("trd_env", ""))
+            if trd_env != "SIMULATE":
+                continue
+            sim_type = str(row.get("sim_acc_type", ""))
+            acc_id = int(row.get("acc_id", 0))
+            candidates.append({"acc_id": acc_id, "sim_acc_type": sim_type})
+            log.info("[ACC_DISCOVERY] Found SIMULATE account: acc_id=%d sim_acc_type=%s", acc_id, sim_type)
+
+        # Prefer exact match on target sim_acc_type
+        for c in candidates:
+            if c["sim_acc_type"] == _SIM_ACC_TYPE_TARGET:
+                MOOMOO_ACC_ID = c["acc_id"]
+                log.info(
+                    "[ACC_DISCOVERY] Auto-selected acc_id=%d (sim_acc_type=%s)",
+                    MOOMOO_ACC_ID, _SIM_ACC_TYPE_TARGET,
+                )
+                return MOOMOO_ACC_ID
+
+        # Fallback: use first SIMULATE account
+        if candidates:
+            MOOMOO_ACC_ID = candidates[0]["acc_id"]
+            log.warning(
+                "[ACC_DISCOVERY] No %s account found, falling back to acc_id=%d (sim_acc_type=%s)",
+                _SIM_ACC_TYPE_TARGET, MOOMOO_ACC_ID, candidates[0]["sim_acc_type"],
+            )
+            return MOOMOO_ACC_ID
+
+        log.error("[ACC_DISCOVERY] No SIMULATE accounts found")
+        return 0
+
+    except Exception as e:
+        log.exception("[ACC_DISCOVERY] Exception during account discovery")
+        return 0
+
+
 def _get_trd_ctx():
-    """Return (or create) a persistent trade context."""
+    """Return (or create) a persistent trade context.
+
+    On first connection, if MOOMOO_ACC_ID is 0 (not manually set),
+    auto-discovers the correct SIMULATE account.
+    """
     global _trd_ctx
     if _trd_ctx is None:
         log.info(
@@ -121,6 +186,8 @@ def _get_trd_ctx():
             port=OPEND_PORT,
             security_firm=SECURITY_FIRM,
         )
+        if MOOMOO_ACC_ID == 0:
+            _discover_simulate_acc_id(_trd_ctx)
     return _trd_ctx
 
 
@@ -184,6 +251,8 @@ def health():
         "trd_env": "SIMULATE",
         "trd_market": os.environ.get("TRD_MARKET", "US"),
         "acc_id": MOOMOO_ACC_ID,
+        "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
+        "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
 
@@ -608,7 +677,7 @@ def get_bars():
 def list_accounts():
     """
     List all available SIMULATE trading accounts.
-    Use this to find the correct acc_id to set in MOOMOO_ACC_ID.
+    Shows which account is currently active and how it was selected.
     """
     try:
         trd_ctx = _get_trd_ctx()
@@ -624,19 +693,22 @@ def list_accounts():
             trd_env = str(row.get("trd_env", ""))
             if trd_env != "SIMULATE":
                 continue
+            acc_id = int(row.get("acc_id", 0))
             accounts.append({
-                "acc_id": int(row.get("acc_id", 0)),
+                "acc_id": acc_id,
                 "trd_env": trd_env,
                 "acc_type": str(row.get("acc_type", "")),
                 "sim_acc_type": str(row.get("sim_acc_type", "")),
                 "trdmarket_auth": str(row.get("trdmarket_auth", "")),
+                "active": acc_id == MOOMOO_ACC_ID,
             })
 
         log.info("[ACCOUNTS] Found %d SIMULATE accounts", len(accounts))
         return jsonify({
             "accounts": accounts,
             "current_acc_id": MOOMOO_ACC_ID,
-            "note": "Set MOOMOO_ACC_ID env var to pin a specific account",
+            "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
+            "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         })
 
     except Exception as e:
@@ -651,5 +723,8 @@ def list_accounts():
 if __name__ == "__main__":
     port = int(os.environ.get("BRIDGE_PORT", "11436"))
     log.info("Starting moomoo-bridge on port %d", port)
-    log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: %s", OPEND_HOST, OPEND_PORT, TRD_MARKET, MOOMOO_ACC_ID or 'auto')
+    if MOOMOO_ACC_ID:
+        log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: %d (from env)", OPEND_HOST, OPEND_PORT, TRD_MARKET, MOOMOO_ACC_ID)
+    else:
+        log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: auto-discover (target: %s)", OPEND_HOST, OPEND_PORT, TRD_MARKET, _SIM_ACC_TYPE_TARGET)
     app.run(host="0.0.0.0", port=port, debug=False)
