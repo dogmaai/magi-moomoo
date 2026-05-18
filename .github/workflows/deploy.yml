@@ -54,8 +54,7 @@ jobs:
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image=${{ env.AR_REPO }}/proxy:${{ needs.build.outputs.image_tag }} \
             --region=${{ env.REGION }} \
-            --platform=managed \
-            --allow-unauthenticated=false \
+            --no-allow-unauthenticated \
             --memory=256Mi \
             --cpu=1 \
             --min-instances=0 \
