@@ -149,6 +149,28 @@ app.get('/trade/accounts', async (req, res) => {
   }
 });
 
+// === Connectivity Check ===
+
+// End-to-end connectivity test: proxy → bridge → OpenD
+app.get('/connectivity', async (req, res) => {
+  const checks = { proxy: 'ok', bridge_url: null, bridge_health: null, timestamp: new Date().toISOString() };
+  try {
+    const url = await getMoomooBridgeUrl();
+    checks.bridge_url = url;
+  } catch (e) {
+    checks.bridge_url = 'ERROR: ' + e.message;
+    return res.status(503).json({ status: 'error', checks, error: 'bridge URL not found in BigQuery' });
+  }
+  try {
+    const result = await proxyToBridge('/health');
+    checks.bridge_health = result.body;
+  } catch (e) {
+    checks.bridge_health = 'ERROR: ' + e.message;
+    return res.status(503).json({ status: 'error', checks, error: 'bridge unreachable' });
+  }
+  res.json({ status: 'ok', checks });
+});
+
 // === Legacy Phase 1 Endpoints (kept for backward compatibility) ===
 
 // 残高確認 (Phase 1 - legacy)
@@ -180,6 +202,29 @@ app.post('/order', async (req, res) => {
       order: { symbol, side, qty }
     });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// === Service Registration Helper ===
+
+// Register this service's URL in BigQuery (called once after deployment)
+app.post('/register', async (req, res) => {
+  const body = req.body || {};
+  const serviceUrl = body.url;
+  if (!serviceUrl) {
+    return res.status(400).json({ error: 'url is required in request body' });
+  }
+  try {
+    await bigquery.query({
+      query: `INSERT INTO \`screen-share-459802.magi_core.service_endpoints\` (service, url, updated_at)
+              VALUES (@service, @url, CAST(CURRENT_TIMESTAMP() AS STRING))`,
+      params: { service: 'magi-moomoo', url: serviceUrl },
+      location: 'US'
+    });
+    res.json({ status: 'registered', service: 'magi-moomoo', url: serviceUrl });
+  } catch (e) {
+    console.error('[REGISTER] BigQuery error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
