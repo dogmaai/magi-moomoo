@@ -59,11 +59,11 @@ TRD_MARKET = TRD_MARKET_MAP.get(os.environ.get("TRD_MARKET", "US"), TrdMarket.US
 # Paper trading only — hardcoded for safety
 TRD_ENV = TrdEnv.SIMULATE
 
-# Optional: pin a specific SIMULATE account by ID.
+# Pin a specific SIMULATE account by ID.
 # Without this the SDK uses acc_index=0 which may pick the wrong
 # paper-trading account (e.g. $1M default instead of user's $50K reset).
-# Set MOOMOO_ACC_ID in the environment to the desired acc_id integer.
-MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
+# Override via MOOMOO_ACC_ID env var if needed.
+MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "182729395"))
 
 ORDER_TYPE_MAP = {
     "MARKET": OrderType.MARKET,
@@ -183,6 +183,7 @@ def health():
         "opend": f"{OPEND_HOST}:{OPEND_PORT}",
         "trd_env": "SIMULATE",
         "trd_market": os.environ.get("TRD_MARKET", "US"),
+        "acc_id": MOOMOO_ACC_ID,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
 
