@@ -20,9 +20,10 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
-# Pin the correct SIMULATE account (Master Challenge contest).
+# Pin a specific SIMULATE account by ID.
+# Set MOOMOO_ACC_ID in the environment (e.g. via Secret Manager).
 # Use /accounts endpoint to discover available acc_ids.
-export MOOMOO_ACC_ID="${MOOMOO_ACC_ID:-182729395}"
+export MOOMOO_ACC_ID="${MOOMOO_ACC_ID:?MOOMOO_ACC_ID must be set}"
 
 # --- 1. Start moomoo-bridge if not running ---
 if lsof -i ":${BRIDGE_PORT}" >/dev/null 2>&1; then

@@ -80,7 +80,7 @@ python3 scripts/moomoo-liquidate.py
 
 | Variable | Default | Description |
 |---|---|---|
-| `MOOMOO_ACC_ID` | `182729395` | SIMULATE account ID (Master Challenge contest) |
+| `MOOMOO_ACC_ID` | *(required)* | SIMULATE account ID (set via Secret Manager or env) |
 | `OPEND_HOST` | `127.0.0.1` | OpenD TCP host |
 | `OPEND_PORT` | `11111` | OpenD TCP port |
 | `BRIDGE_PORT` | `11436` | Bridge HTTP port |
