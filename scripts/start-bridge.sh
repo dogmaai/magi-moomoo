@@ -20,10 +20,16 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
-# Pin a specific SIMULATE account by ID.
-# Set MOOMOO_ACC_ID in the environment (e.g. via Secret Manager).
-# Use /accounts endpoint to discover available acc_ids.
-export MOOMOO_ACC_ID="${MOOMOO_ACC_ID:?MOOMOO_ACC_ID must be set}"
+# Optional: pin a specific SIMULATE account by ID.
+# If not set, the bridge auto-discovers the correct account
+# (US → STOCK_AND_OPTION, HK → STOCK) via get_acc_list().
+# Use /accounts endpoint to verify the selected account.
+if [ -n "${MOOMOO_ACC_ID}" ]; then
+  export MOOMOO_ACC_ID
+  echo "[config] MOOMOO_ACC_ID=${MOOMOO_ACC_ID} (from env)"
+else
+  echo "[config] MOOMOO_ACC_ID not set — bridge will auto-discover SIMULATE account"
+fi
 
 # --- 1. Start moomoo-bridge if not running ---
 if lsof -i ":${BRIDGE_PORT}" >/dev/null 2>&1; then
