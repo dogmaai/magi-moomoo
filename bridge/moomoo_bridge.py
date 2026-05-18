@@ -363,7 +363,7 @@ def get_positions():
             nominal_price = _safe_float(row.get("nominal_price"))
             cost_price = _safe_float(row.get("cost_price"))
             market_val = _safe_float(row.get("market_val"))
-            unrealized_pnl = market_val - (cost_price * abs(qty)) if cost_price else 0
+            unrealized_pnl = _safe_float(row.get("pl_val"))
 
             positions.append({
                 "symbol": _to_magi_symbol(str(row.get("code", ""))),
