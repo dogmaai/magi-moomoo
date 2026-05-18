@@ -22,6 +22,7 @@ Run `bash scripts/setup-tools.sh` to install everything.
 | `moomoo-test-order.py` | Place a test paper trading order |
 | `moomoo-liquidate.py` | Sell all open positions (account reset helper) |
 | `register-tunnel.py` | Register tunnel URL in BigQuery `service_endpoints` |
+| `register-service.py` | Register magi-moomoo Cloud Run URL in BigQuery |
 
 ## Quick Start (TIALA)
 
@@ -31,7 +32,7 @@ bash scripts/setup-tools.sh
 
 # 2. Start OpenD (MooMoo app or command-line)
 
-# 3. Start bridge + tunnel
+# 3. Start bridge + tunnel (auto-registers opend-proxy URL in BigQuery)
 bash scripts/start-bridge.sh
 
 # 4. Run diagnostics
@@ -39,6 +40,33 @@ python3 scripts/moomoo-diag.py
 
 # 5. Check bridge remotely
 bash scripts/moomoo-check-bridge.sh https://xxx.trycloudflare.com
+```
+
+## Cloud Run Deployment
+
+The magi-moomoo proxy is deployed to Cloud Run automatically on push to `main`
+via `.github/workflows/deploy.yml`. The workflow also registers the Cloud Run
+URL in BigQuery `service_endpoints` as `magi-moomoo`.
+
+To register manually after a first-time deployment:
+```bash
+# Auto-detect URL from gcloud:
+python3 scripts/register-service.py
+
+# Or provide the URL explicitly:
+python3 scripts/register-service.py https://magi-moomoo-xxxx.asia-northeast1.run.app
+```
+
+## Connectivity Check
+
+Verify the full chain (proxy -> bridge -> OpenD):
+```bash
+# Via Cloud Run (requires OIDC token):
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  https://magi-moomoo-xxxx.asia-northeast1.run.app/connectivity
+
+# Response when healthy:
+# { "status": "ok", "checks": { "proxy": "ok", "bridge_url": "https://...", "bridge_health": {...} } }
 ```
 
 ## Common Operations
@@ -96,3 +124,12 @@ Cloud Scheduler → magi-core (Cloud Run) → magi-moomoo (Cloud Run)
                                               ↓ TCP
                                          OpenD (TIALA) → MooMoo Server
 ```
+
+## BigQuery Service Discovery
+
+| service | registered by | description |
+|---|---|---|
+| `magi-moomoo` | `deploy.yml` / `register-service.py` | Cloud Run proxy URL |
+| `opend-proxy` | `start-bridge.sh` / `register-tunnel.py` | Bridge tunnel URL (cloudflared/ngrok) |
+
+magi-core looks up `magi-moomoo`, and the proxy looks up `opend-proxy`.

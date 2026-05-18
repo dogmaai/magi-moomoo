@@ -1,0 +1,91 @@
+name: Deploy to Cloud Run
+on:
+  push:
+    branches: [main]
+env:
+  PROJECT_ID: screen-share-459802
+  REGION: asia-northeast1
+  AR_REPO: asia-northeast1-docker.pkg.dev/screen-share-459802/magi-moomoo
+  SERVICE_NAME: magi-moomoo
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/398890937507/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-actions@screen-share-459802.iam.gserviceaccount.com'
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+      - name: Create Artifact Registry repo (if not exists)
+        run: |
+          gcloud artifacts repositories describe magi-moomoo \
+            --location=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} 2>/dev/null || \
+          gcloud artifacts repositories create magi-moomoo \
+            --repository-format=docker \
+            --location=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }}
+      - name: Set image tag
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+      - name: Build and push image
+        run: |
+          docker build -t ${{ env.AR_REPO }}/proxy:${{ steps.meta.outputs.tag }} .
+          docker push ${{ env.AR_REPO }}/proxy:${{ steps.meta.outputs.tag }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/398890937507/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-actions@screen-share-459802.iam.gserviceaccount.com'
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+      - name: Deploy magi-moomoo Cloud Run service
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=${{ env.AR_REPO }}/proxy:${{ needs.build.outputs.image_tag }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated=false \
+            --memory=256Mi \
+            --cpu=1 \
+            --min-instances=0 \
+            --max-instances=3 \
+            --timeout=30s \
+            --project=${{ env.PROJECT_ID }}
+      - name: Register service URL in BigQuery
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "Service URL: ${SERVICE_URL}"
+          bq query --use_legacy_sql=false --location=US \
+            "INSERT INTO \`${{ env.PROJECT_ID }}.magi_core.service_endpoints\` (service, url, updated_at) VALUES ('magi-moomoo', '${SERVICE_URL}', CAST(CURRENT_TIMESTAMP() AS STRING))"
+      - name: Deploy Summary
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "magi-moomoo deployed successfully!"
+          echo "Service URL: ${SERVICE_URL}"
+          echo "BigQuery: magi-moomoo → ${SERVICE_URL}"
