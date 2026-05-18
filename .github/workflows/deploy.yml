@@ -5,7 +5,7 @@ on:
 env:
   PROJECT_ID: screen-share-459802
   REGION: asia-northeast1
-  AR_REPO: asia-northeast1-docker.pkg.dev/screen-share-459802/magi-moomoo
+  AR_REPO: asia-northeast1-docker.pkg.dev/screen-share-459802/magi-core
   SERVICE_NAME: magi-moomoo
 jobs:
   build:
@@ -27,15 +27,6 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
-      - name: Create Artifact Registry repo (if not exists)
-        run: |
-          gcloud artifacts repositories describe magi-moomoo \
-            --location=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }} 2>/dev/null || \
-          gcloud artifacts repositories create magi-moomoo \
-            --repository-format=docker \
-            --location=${{ env.REGION }} \
-            --project=${{ env.PROJECT_ID }}
       - name: Set image tag
         id: meta
         run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
