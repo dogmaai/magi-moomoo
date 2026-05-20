@@ -9,8 +9,16 @@ const bigquery = new BigQuery({ projectId: 'screen-share-459802' });
 
 const PROXY_TIMEOUT_MS = 10000; // 10 second timeout for bridge requests
 
-// moomoo-bridge ngrok URLをBigQueryから取得
+// moomoo-bridge URL cache (avoid BQ query on every request)
+let cachedBridgeUrl = null;
+let lastFetchTime = 0;
+const CACHE_TTL_MS = 60_000; // 1 minute
+
+// moomoo-bridge ngrok URLをBigQueryから取得（with cache）
 async function getMoomooBridgeUrl() {
+  if (cachedBridgeUrl && (Date.now() - lastFetchTime < CACHE_TTL_MS)) {
+    return cachedBridgeUrl;
+  }
   const query = `
     SELECT url FROM \`screen-share-459802.magi_core.service_endpoints\`
     WHERE service = 'opend-proxy'
@@ -19,7 +27,16 @@ async function getMoomooBridgeUrl() {
   `;
   const [rows] = await bigquery.query({ query });
   if (!rows.length) throw new Error('moomoo-bridge URL not found in BigQuery');
-  return rows[0].url;
+  cachedBridgeUrl = rows[0].url;
+  lastFetchTime = Date.now();
+  console.log('[CACHE] Bridge URL refreshed:', cachedBridgeUrl);
+  return cachedBridgeUrl;
+}
+
+// Clear cached URL (called on connection errors so next request re-fetches)
+function invalidateBridgeUrlCache() {
+  cachedBridgeUrl = null;
+  lastFetchTime = 0;
 }
 
 // moomoo-bridgeへプロキシリクエスト送信 (with timeout)
@@ -37,7 +54,12 @@ async function proxyToBridge(path, options = {}) {
     return { status: res.status, body };
   } catch (e) {
     if (e.name === 'AbortError') {
+      invalidateBridgeUrlCache();
       throw new Error('moomoo-bridge timeout');
+    }
+    // Connection errors (tunnel URL stale) → clear cache so next request re-fetches
+    if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET') {
+      invalidateBridgeUrlCache();
     }
     throw e;
   } finally {
