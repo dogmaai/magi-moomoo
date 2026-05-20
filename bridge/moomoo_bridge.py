@@ -727,4 +727,4 @@ if __name__ == "__main__":
         log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: %d (from env)", OPEND_HOST, OPEND_PORT, TRD_MARKET, MOOMOO_ACC_ID)
     else:
         log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: auto-discover (target: %s)", OPEND_HOST, OPEND_PORT, TRD_MARKET, _SIM_ACC_TYPE_TARGET)
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
