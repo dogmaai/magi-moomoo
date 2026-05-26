@@ -295,29 +295,25 @@ def place_order():
     order_type = ORDER_TYPE_MAP.get(order_type_str, OrderType.MARKET)
     code = _to_moomoo_code(symbol)
 
-    # Auto-convert MARKET → LIMIT outside RTH.
-    # MooMoo rejects MARKET orders outside Regular Trading Hours with
-    # "Can only place RTH market orders".  We fall back to a LIMIT order
-    # at the last traded price so paper-trading orders always go through.
+    # Always convert MARKET → LIMIT for paper trading (SIMULATE).
+    # MooMoo SDK rejects MARKET orders with "Can only place RTH market
+    # orders" — even during apparent RTH on holidays and sometimes on
+    # normal trading days.  Using LIMIT at last-traded price is reliable
+    # in all conditions and behaves identically for paper trading.
     auto_limit = False
-    if order_type == OrderType.MARKET:
-        now_et = datetime.now(ZoneInfo("America/New_York"))
-        hour, minute = now_et.hour, now_et.minute
-        in_rth = (hour == 9 and minute >= 30) or (10 <= hour <= 15) or (hour == 16 and minute == 0)
-        weekday = now_et.weekday()  # 0=Mon .. 6=Sun
-        if weekday >= 5 or not in_rth:
-            try:
-                quote_ctx = _get_quote_ctx()
-                qret, qdata = quote_ctx.get_market_snapshot([code])
-                if qret == RET_OK and len(qdata) > 0:
-                    last = _safe_float(qdata.iloc[0].get("last_price"))
-                    if last > 0:
-                        price = last
-                        order_type = OrderType.NORMAL  # LIMIT
-                        auto_limit = True
-                        log.info("[ORDER] Auto-converted MARKET→LIMIT@%.2f (outside RTH)", price)
-            except Exception as qe:
-                log.warning("[ORDER] Quote fetch for auto-limit failed: %s", qe)
+    if order_type == OrderType.MARKET and TRD_ENV == TrdEnv.SIMULATE:
+        try:
+            quote_ctx = _get_quote_ctx()
+            qret, qdata = quote_ctx.get_market_snapshot([code])
+            if qret == RET_OK and len(qdata) > 0:
+                last = _safe_float(qdata.iloc[0].get("last_price"))
+                if last > 0:
+                    price = last
+                    order_type = OrderType.NORMAL  # LIMIT
+                    auto_limit = True
+                    log.info("[ORDER] Auto-converted MARKET→LIMIT@%.2f (paper trading)", price)
+        except Exception as qe:
+            log.warning("[ORDER] Quote fetch for auto-limit failed, keeping MARKET: %s", qe)
 
     # For MARKET orders, price is ignored but the SDK still requires a value
     if order_type == OrderType.MARKET and price == 0:
