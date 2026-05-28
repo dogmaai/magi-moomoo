@@ -300,24 +300,28 @@ def place_order():
     # orders" — even during apparent RTH on holidays and sometimes on
     # normal trading days.  Using LIMIT at last-traded price is reliable
     # in all conditions and behaves identically for paper trading.
+    request_price = price  # caller-supplied hint (e.g. currentPrice from AUTO_CLOSE)
     auto_limit = False
     if order_type == OrderType.MARKET and TRD_ENV == TrdEnv.SIMULATE:
+        snapshot_price = 0.0
         try:
             quote_ctx = _get_quote_ctx()
             qret, qdata = quote_ctx.get_market_snapshot([code])
             if qret == RET_OK and len(qdata) > 0:
-                last = _safe_float(qdata.iloc[0].get("last_price"))
-                if last > 0:
-                    price = last
-                    order_type = OrderType.NORMAL  # LIMIT
-                    auto_limit = True
-                    log.info("[ORDER] Auto-converted MARKET→LIMIT@%.2f (paper trading)", price)
+                snapshot_price = _safe_float(qdata.iloc[0].get("last_price"))
         except Exception as qe:
-            log.warning("[ORDER] Quote fetch for auto-limit failed, keeping MARKET: %s", qe)
+            log.warning("[ORDER] Quote fetch for auto-limit failed: %s", qe)
 
-    # For MARKET orders, price is ignored but the SDK still requires a value
-    if order_type == OrderType.MARKET and price == 0:
-        price = 0.01  # placeholder — OpenD ignores it for market orders
+        limit_price = snapshot_price if snapshot_price > 0 else request_price
+        if limit_price > 0:
+            price = limit_price
+            order_type = OrderType.NORMAL  # LIMIT
+            auto_limit = True
+            source = "snapshot" if snapshot_price > 0 else "request_hint"
+            log.info("[ORDER] Auto-converted MARKET→LIMIT@%.2f (%s)", price, source)
+        else:
+            log.error("[ORDER] Cannot auto-convert MARKET→LIMIT: no price available (snapshot=%.2f, request=%.2f)", snapshot_price, request_price)
+            return jsonify({"success": False, "error": "No price available for LIMIT conversion; MARKET orders not supported in SIMULATE"}), 400
 
     log.info(
         "[ORDER] %s %s x%s type=%s price=%.2f remark=%s",
