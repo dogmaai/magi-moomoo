@@ -136,7 +136,50 @@ const validate = (opts) => {
 // validate({ price: -1 }) === 0         (negative rejected)
 ```
 
-### 8. Full Trade Cycle (magi-core integration)
+### 8. Market Data Endpoints (snapshot, orderbook, order_history)
+
+These endpoints were added to support the HERMES:MOOMOO data source in magi-core.
+
+**Batch Snapshot (up to 400 symbols):**
+```bash
+curl -s https://<TUNNEL_URL>/snapshot?symbols=AAPL,TSLA,MSFT
+# Expected: {"snapshots":[{symbol, last_price, open, high, low, prev_close, volume, turnover, bid, ask, spread, change, change_pct, timestamp},...], "count":3}
+# Rate limit: 60 requests per 30 seconds
+# HERMES uses this with ~12 INTELLIGENCE_SYMBOLS in a single request
+```
+
+**Order Book (bid/ask depth):**
+```bash
+curl -s https://<TUNNEL_URL>/orderbook?symbol=AAPL
+# Expected: {"symbol":"AAPL","bids":[{price, volume, order_count}],"asks":[...],"timestamp":"..."}
+# WARNING: Consumes 1 OpenD subscription slot (ORDER_BOOK type). Tier-dependent limit (100-2000 slots).
+```
+
+**Order History:**
+```bash
+curl -s https://<TUNNEL_URL>/order_history?days=7&code=AAPL
+# Expected: {"orders":[{order_id, symbol, side, qty, price, filled_price, filled_qty, status, create_time, updated_time, remark}], "count":N, "days":7}
+# Max 90 days lookback (enforced server-side)
+# SIMULATE environment orders only
+```
+
+**Via Cloud Run proxy (authenticated):**
+```bash
+URL=$(gcloud run services describe magi-moomoo --region=asia-northeast1 --format='value(status.url)')
+TOKEN=$(gcloud auth print-identity-token --audiences=$URL)
+curl -H "Authorization: Bearer $TOKEN" "$URL/trade/snapshot?symbols=AAPL,TSLA"
+curl -H "Authorization: Bearer $TOKEN" "$URL/trade/orderbook?symbol=AAPL"
+curl -H "Authorization: Bearer $TOKEN" "$URL/trade/order_history?days=7"
+```
+
+**Offline testing (when bridge is not running):**
+
+When TIALA/bridge is unavailable, you can still verify bridge code with:
+- Python syntax check: `python3 -m py_compile bridge/moomoo_bridge.py`
+- AST route extraction: Parse with `ast` module, walk `FunctionDef` nodes with `@app.route` decorators
+- Schema consistency: Verify snapshot response fields match what magi-core HERMES consumer expects (see T7 in test plan)
+
+### 9. Full Trade Cycle (magi-core integration)
 
 Start magi-core Express server:
 ```bash
