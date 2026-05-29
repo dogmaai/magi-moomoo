@@ -9,6 +9,9 @@ POST /place_order      Place a market/limit order (paper trading)
 GET  /positions        List open positions
 GET  /account_info     Account balance & buying power
 GET  /order/<order_id> Get order status / fill details
+GET  /snapshot         Batch market snapshot for multiple symbols
+GET  /orderbook        Order book (bid/ask depth) for a symbol
+GET  /order_history    Historical order list
 GET  /health           Liveness check
 
 Environment
@@ -713,6 +716,201 @@ def list_accounts():
 
     except Exception as e:
         log.exception("[ACCOUNTS] Exception")
+        _reset_trd_ctx()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/snapshot", methods=["GET"])
+def get_snapshot():
+    """
+    Batch market snapshot for multiple symbols.
+
+    Query params:
+        symbols  str  comma-separated, e.g. "AAPL,TSLA,MSFT" (max 400)
+
+    Response JSON:
+        snapshots  list of {symbol, last_price, open, high, low, prev_close,
+                            volume, turnover, bid, ask, spread, change, change_pct,
+                            timestamp}
+    """
+    symbols_str = request.args.get("symbols")
+    if not symbols_str:
+        return jsonify({"error": "symbols query param required (comma-separated)"}), 400
+
+    raw_symbols = [s.strip() for s in symbols_str.split(",") if s.strip()]
+    if len(raw_symbols) > 400:
+        return jsonify({"error": "max 400 symbols per request"}), 400
+
+    codes = [_to_moomoo_code(s) for s in raw_symbols]
+
+    try:
+        quote_ctx = _get_quote_ctx()
+        ret, data = quote_ctx.get_market_snapshot(codes)
+
+        if ret != RET_OK:
+            log.error("[SNAPSHOT] get_market_snapshot failed: %s", data)
+            _reset_quote_ctx()
+            return jsonify({"error": str(data)}), 500
+
+        snapshots = []
+        for _, row in data.iterrows():
+            last = _safe_float(row.get("last_price"))
+            prev = _safe_float(row.get("prev_close_price"))
+            bid = _safe_float(row.get("bid_price"))
+            ask = _safe_float(row.get("ask_price"))
+            change = round(last - prev, 4) if last and prev else 0.0
+            change_pct = round((change / prev) * 100, 2) if prev else 0.0
+            spread = round(ask - bid, 4) if ask and bid else 0.0
+
+            snapshots.append({
+                "symbol": _to_magi_symbol(str(row.get("code", ""))),
+                "last_price": last,
+                "open": _safe_float(row.get("open_price")),
+                "high": _safe_float(row.get("high_price")),
+                "low": _safe_float(row.get("low_price")),
+                "prev_close": prev,
+                "volume": int(_safe_float(row.get("volume"))),
+                "turnover": _safe_float(row.get("turnover")),
+                "bid": bid,
+                "ask": ask,
+                "spread": spread,
+                "change": change,
+                "change_pct": change_pct,
+                "timestamp": str(row.get("update_time", "")),
+            })
+
+        log.info("[SNAPSHOT] Returned %d snapshots for %d symbols", len(snapshots), len(raw_symbols))
+        return jsonify({"snapshots": snapshots, "count": len(snapshots)})
+
+    except Exception as e:
+        log.exception("[SNAPSHOT] Exception")
+        _reset_quote_ctx()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/orderbook", methods=["GET"])
+def get_orderbook():
+    """
+    Get order book (bid/ask depth) for a symbol.
+
+    Query params:
+        symbol  str  e.g. "AAPL"
+
+    Response JSON:
+        symbol      str
+        bids        list of {price, volume, order_count}
+        asks        list of {price, volume, order_count}
+        timestamp   str
+    """
+    symbol = request.args.get("symbol")
+    if not symbol:
+        return jsonify({"error": "symbol query param required"}), 400
+
+    code = _to_moomoo_code(symbol)
+
+    try:
+        quote_ctx = _get_quote_ctx()
+
+        ret_sub, err_sub = quote_ctx.subscribe([code], [SubType.ORDER_BOOK])
+        if ret_sub != RET_OK:
+            log.warning("[ORDERBOOK] subscribe failed (may already be subscribed): %s", err_sub)
+
+        ret, data = quote_ctx.get_order_book(code)
+
+        if ret != RET_OK:
+            log.error("[ORDERBOOK] get_order_book failed: %s", data)
+            _reset_quote_ctx()
+            return jsonify({"error": str(data)}), 500
+
+        bids = []
+        asks = []
+
+        for _, row in data.iterrows():
+            entry = {
+                "price": _safe_float(row.get("price")),
+                "volume": int(_safe_float(row.get("volume"))),
+                "order_count": int(_safe_float(row.get("order_num"))),
+            }
+            side = str(row.get("order_book_bid_ask", ""))
+            if side == "Bid":
+                bids.append(entry)
+            elif side == "Ask":
+                asks.append(entry)
+
+        log.info("[ORDERBOOK] %s: %d bids, %d asks", symbol, len(bids), len(asks))
+        return jsonify({
+            "symbol": symbol,
+            "bids": bids,
+            "asks": asks,
+            "bid_count": len(bids),
+            "ask_count": len(asks),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        })
+
+    except Exception as e:
+        log.exception("[ORDERBOOK] Exception")
+        _reset_quote_ctx()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/order_history", methods=["GET"])
+def get_order_history():
+    """
+    Get historical order list.
+
+    Query params:
+        code    str  optional, filter by symbol (e.g. "AAPL")
+        days    int  lookback days (default 7, max 90)
+
+    Response JSON:
+        orders  list of {order_id, symbol, side, qty, price, filled_price,
+                         filled_qty, status, create_time, updated_time, remark}
+    """
+    code_filter = request.args.get("code", "")
+    days = min(int(request.args.get("days", 7)), 90)
+
+    if code_filter:
+        code_filter = _to_moomoo_code(code_filter)
+
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    end = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        trd_ctx = _get_trd_ctx()
+        ret, data = trd_ctx.history_order_list_query(
+            trd_env=TRD_ENV,
+            acc_id=MOOMOO_ACC_ID,
+            code=code_filter,
+            start=start,
+            end=end,
+        )
+
+        if ret != RET_OK:
+            log.error("[ORDER_HISTORY] history_order_list_query failed: %s", data)
+            _reset_trd_ctx()
+            return jsonify({"error": str(data)}), 500
+
+        orders = []
+        for _, row in data.iterrows():
+            orders.append({
+                "order_id": str(row.get("order_id", "")),
+                "symbol": _to_magi_symbol(str(row.get("code", ""))),
+                "side": str(row.get("trd_side", "")),
+                "qty": _safe_float(row.get("qty")),
+                "price": _safe_float(row.get("price")),
+                "filled_price": _safe_float(row.get("dealt_avg_price")) or None,
+                "filled_qty": _safe_float(row.get("dealt_qty")) or None,
+                "status": str(row.get("order_status", "")),
+                "create_time": str(row.get("create_time", "")),
+                "updated_time": str(row.get("updated_time", "")),
+                "remark": str(row.get("remark", "")),
+            })
+
+        log.info("[ORDER_HISTORY] Returned %d orders (last %d days)", len(orders), days)
+        return jsonify({"orders": orders, "count": len(orders), "days": days})
+
+    except Exception as e:
+        log.exception("[ORDER_HISTORY] Exception")
         _reset_trd_ctx()
         return jsonify({"error": str(e)}), 500
 

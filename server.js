@@ -171,6 +171,47 @@ app.get('/trade/accounts', async (req, res) => {
   }
 });
 
+// 複数銘柄バッチスナップショット取得
+app.get('/trade/snapshot', async (req, res) => {
+  try {
+    const symbols = req.query.symbols;
+    if (!symbols) return res.status(400).json({ error: 'symbols query param required (comma-separated)' });
+    const result = await proxyToBridge(`/snapshot?symbols=${encodeURIComponent(symbols)}`);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] snapshot error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
+// 板情報（オーダーブック）取得
+app.get('/trade/orderbook', async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+    if (!symbol) return res.status(400).json({ error: 'symbol query param required' });
+    const result = await proxyToBridge(`/orderbook?symbol=${encodeURIComponent(symbol)}`);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] orderbook error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
+// 注文履歴取得
+app.get('/trade/order_history', async (req, res) => {
+  try {
+    const code = req.query.code || '';
+    const days = req.query.days || 7;
+    let path = `/order_history?days=${days}`;
+    if (code) path += `&code=${encodeURIComponent(code)}`;
+    const result = await proxyToBridge(path);
+    res.status(result.status).json(result.body);
+  } catch (e) {
+    console.error('[PROXY] order_history error:', e.message);
+    res.status(503).json({ error: 'moomoo-bridge unreachable', detail: e.message });
+  }
+});
+
 // === Connectivity Check ===
 
 // End-to-end connectivity test: proxy → bridge → OpenD
