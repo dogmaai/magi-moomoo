@@ -108,12 +108,29 @@ python3 scripts/moomoo-liquidate.py
 
 | Variable | Default | Description |
 |---|---|---|
-| `MOOMOO_ACC_ID` | *(auto-discover)* | SIMULATE account ID; if unset, bridge auto-selects via `sim_acc_type` |
+| `MOOMOO_ACC_ID` | *(auto-discover)* | Account ID. SIMULATE: if unset, bridge auto-selects via `sim_acc_type`. **REAL: must be set explicitly** (no auto-discovery in REAL) |
 | `OPEND_HOST` | `127.0.0.1` | OpenD TCP host |
 | `OPEND_PORT` | `11111` | OpenD TCP port |
 | `BRIDGE_PORT` | `11436` | Bridge HTTP port |
-| `SECURITY_FIRM` | `FUTUINC` | SecurityFirm enum value |
+| `SECURITY_FIRM` | `FUTUINC` | SecurityFirm enum value. Use `FUTUJP` for the moomoo Japan production (REAL) account |
 | `TRD_MARKET` | `US` | Trading market filter |
+| `TRD_ENV` | `SIMULATE` | `SIMULATE` (paper) or `REAL` (live). Defaults to SIMULATE for safety |
+| `MOOMOO_TRADE_PASSWORD` | *(unset)* | Trade unlock password — **REAL only**. Supply via Secret Manager, never hardcode |
+| `MOOMOO_TRADE_PASSWORD_MD5` | *(unset)* | Pre-computed MD5 of the unlock password — alternative to plaintext |
+| `MOOMOO_ALLOW_REAL_ORDERS` | `false` | When `TRD_ENV=REAL`, order placement stays blocked (read-only) unless this is `true` |
+
+### REAL (production) trading notes
+
+- REAL is **opt-in**: the bridge defaults to `SIMULATE`. Setting `TRD_ENV=REAL` alone enables
+  read-only account/position queries against the live account but **does not** allow order
+  placement — `/place_order` returns HTTP 403 until `MOOMOO_ALLOW_REAL_ORDERS=true` is also set.
+- The moomoo Japan production comprehensive account is under `SECURITY_FIRM=FUTUJP` and exposes
+  separate sub-accounts (MARGIN / CASH / DERIVATIVES) each with its own `acc_id`; pin the intended
+  one via `MOOMOO_ACC_ID`.
+- In REAL, the bridge calls `unlock_trade()` using `MOOMOO_TRADE_PASSWORD` (or `_MD5`). Unlock is
+  required for order placement; query endpoints work without it.
+- `moomoo-diag.py` lists **all** accounts (SIMULATE + REAL). For REAL balances/positions pass
+  `--security-firm FUTUJP --trd-env REAL --acc-id <id>`.
 
 ## Architecture
 

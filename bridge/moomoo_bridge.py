@@ -13,10 +13,15 @@ GET  /health           Liveness check
 
 Environment
 -----------
-OPEND_HOST      OpenD TCP host        (default 127.0.0.1)
-OPEND_PORT      OpenD TCP port        (default 11111)
-SECURITY_FIRM   SecurityFirm enum     (default FUTUINC)
-TRD_MARKET      Filter market         (default US)
+OPEND_HOST                OpenD TCP host         (default 127.0.0.1)
+OPEND_PORT                OpenD TCP port         (default 11111)
+SECURITY_FIRM             SecurityFirm enum      (default FUTUINC; FUTUJP for JP REAL account)
+TRD_MARKET                Filter market          (default US)
+TRD_ENV                   SIMULATE | REAL        (default SIMULATE)
+MOOMOO_ACC_ID             Pin account id         (REAL: required; SIMULATE: 0=auto-discover)
+MOOMOO_TRADE_PASSWORD     Trade unlock password  (REAL only; or use _MD5 variant)
+MOOMOO_TRADE_PASSWORD_MD5 Pre-computed MD5        (REAL only; alternative to plaintext)
+MOOMOO_ALLOW_REAL_ORDERS  true to allow REAL order placement (default false = read-only)
 """
 
 import os
@@ -43,12 +48,16 @@ from moomoo import (
 # ---------------------------------------------------------------------------
 OPEND_HOST = os.environ.get("OPEND_HOST", "127.0.0.1")
 OPEND_PORT = int(os.environ.get("OPEND_PORT", "11111"))
+# SecurityFirm enum. FUTUJP (moomoo Japan) holds the JP production (REAL)
+# comprehensive account; older SDKs may not define every value, so the map is
+# built defensively from whatever the installed SDK exposes.
 SECURITY_FIRM_MAP = {
-    "FUTUINC": SecurityFirm.FUTUINC,
-    "FUTUSECURITIES": SecurityFirm.FUTUSECURITIES,
+    name: getattr(SecurityFirm, name)
+    for name in ("FUTUINC", "FUTUSECURITIES", "FUTUJP", "FUTUSG", "FUTUAU")
+    if hasattr(SecurityFirm, name)
 }
 SECURITY_FIRM = SECURITY_FIRM_MAP.get(
-    os.environ.get("SECURITY_FIRM", "FUTUINC"), SecurityFirm.FUTUINC
+    os.environ.get("SECURITY_FIRM", "FUTUINC").upper(), SecurityFirm.FUTUINC
 )
 TRD_MARKET_MAP = {
     "US": TrdMarket.US,
@@ -56,13 +65,28 @@ TRD_MARKET_MAP = {
 }
 TRD_MARKET = TRD_MARKET_MAP.get(os.environ.get("TRD_MARKET", "US"), TrdMarket.US)
 
-# Paper trading only — hardcoded for safety
-TRD_ENV = TrdEnv.SIMULATE
+# Trading environment. Defaults to SIMULATE (paper trading) for safety; REAL is
+# strictly opt-in via TRD_ENV=REAL and order placement is additionally gated.
+_TRD_ENV_NAME = os.environ.get("TRD_ENV", "SIMULATE").upper()
+IS_REAL = _TRD_ENV_NAME == "REAL"
+TRD_ENV = TrdEnv.REAL if IS_REAL else TrdEnv.SIMULATE
+TRD_ENV_STR = "REAL" if IS_REAL else "SIMULATE"
 
-# Pin a specific SIMULATE account by ID.
-# If MOOMOO_ACC_ID is 0 (default), the bridge will auto-discover the
-# correct US STOCK_AND_OPTION SIMULATE account on first trade context use.
-# Override via MOOMOO_ACC_ID env var to skip auto-discovery.
+# Real-money order placement is blocked unless explicitly enabled. Reading
+# account info / positions in REAL is allowed; placing REAL orders requires
+# BOTH TRD_ENV=REAL and MOOMOO_ALLOW_REAL_ORDERS=true.
+ALLOW_REAL_ORDERS = os.environ.get("MOOMOO_ALLOW_REAL_ORDERS", "false").lower() == "true"
+
+# Trade unlock credentials for REAL trading (unused in SIMULATE). Never hardcode
+# — supply via env / Secret Manager. Provide plaintext OR a pre-computed MD5.
+TRADE_PASSWORD = os.environ.get("MOOMOO_TRADE_PASSWORD") or None
+TRADE_PASSWORD_MD5 = os.environ.get("MOOMOO_TRADE_PASSWORD_MD5") or None
+
+# Pin a specific account by ID.
+# SIMULATE: if MOOMOO_ACC_ID is 0 (default), auto-discover the US
+# STOCK_AND_OPTION account on first trade context use.
+# REAL: MOOMOO_ACC_ID MUST be set explicitly (no auto-discovery in REAL, to
+# avoid selecting the wrong sub-account, e.g. CASH/DERIVATIVES).
 MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
 
 # Target sim_acc_type for auto-discovery (per MooMoo support guidance).
@@ -115,6 +139,36 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 _trd_ctx = None
 _quote_ctx = None
+_trade_unlocked = False
+
+
+def _unlock_trade_if_real(trd_ctx):
+    """Unlock trading for REAL env. No-op for SIMULATE.
+
+    Query APIs (account info / positions) work without unlocking, but order
+    placement requires a successful unlock. Failure is logged, not fatal, so
+    read-only endpoints keep working.
+    """
+    global _trade_unlocked
+    if not IS_REAL or _trade_unlocked:
+        return
+    if not TRADE_PASSWORD and not TRADE_PASSWORD_MD5:
+        log.warning(
+            "[UNLOCK] REAL env but no MOOMOO_TRADE_PASSWORD/_MD5 set; trading "
+            "APIs remain locked (read-only queries still work)"
+        )
+        return
+    try:
+        ret, data = trd_ctx.unlock_trade(
+            password=TRADE_PASSWORD, password_md5=TRADE_PASSWORD_MD5,
+        )
+        if ret == RET_OK:
+            _trade_unlocked = True
+            log.info("[UNLOCK] REAL trade unlock succeeded")
+        else:
+            log.error("[UNLOCK] REAL trade unlock failed: %s", data)
+    except Exception:
+        log.exception("[UNLOCK] Exception during unlock_trade")
 
 
 def _discover_simulate_acc_id(trd_ctx):
@@ -177,8 +231,8 @@ def _get_trd_ctx():
     global _trd_ctx
     if _trd_ctx is None:
         log.info(
-            "Connecting trade context → %s:%s (market=%s, firm=%s, env=SIMULATE)",
-            OPEND_HOST, OPEND_PORT, TRD_MARKET, SECURITY_FIRM,
+            "Connecting trade context → %s:%s (market=%s, firm=%s, env=%s)",
+            OPEND_HOST, OPEND_PORT, TRD_MARKET, SECURITY_FIRM, TRD_ENV_STR,
         )
         _trd_ctx = OpenSecTradeContext(
             filter_trdmarket=TRD_MARKET,
@@ -186,7 +240,14 @@ def _get_trd_ctx():
             port=OPEND_PORT,
             security_firm=SECURITY_FIRM,
         )
-        if MOOMOO_ACC_ID == 0:
+        if IS_REAL:
+            if MOOMOO_ACC_ID == 0:
+                log.error(
+                    "[ACC] REAL env requires MOOMOO_ACC_ID to be set "
+                    "explicitly; none provided (acc_id=0)"
+                )
+            _unlock_trade_if_real(_trd_ctx)
+        elif MOOMOO_ACC_ID == 0:
             _discover_simulate_acc_id(_trd_ctx)
     return _trd_ctx
 
@@ -202,13 +263,14 @@ def _get_quote_ctx():
 
 def _reset_trd_ctx():
     """Close and discard the trade context so next call reconnects."""
-    global _trd_ctx
+    global _trd_ctx, _trade_unlocked
     if _trd_ctx is not None:
         try:
             _trd_ctx.close()
         except Exception:
             pass
         _trd_ctx = None
+    _trade_unlocked = False
 
 
 def _reset_quote_ctx():
@@ -248,11 +310,14 @@ def health():
         "status": "ok",
         "service": "moomoo-bridge",
         "opend": f"{OPEND_HOST}:{OPEND_PORT}",
-        "trd_env": "SIMULATE",
+        "trd_env": TRD_ENV_STR,
+        "security_firm": os.environ.get("SECURITY_FIRM", "FUTUINC").upper(),
         "trd_market": os.environ.get("TRD_MARKET", "US"),
         "acc_id": MOOMOO_ACC_ID,
         "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
         "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
+        "real_orders_enabled": (IS_REAL and ALLOW_REAL_ORDERS),
+        "trade_unlocked": _trade_unlocked,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
 
@@ -287,6 +352,17 @@ def place_order():
 
     if not symbol or not side_str or not qty:
         return jsonify({"success": False, "error": "symbol, side, qty required"}), 400
+
+    # Safety gate: real-money orders are blocked unless explicitly enabled.
+    if IS_REAL and not ALLOW_REAL_ORDERS:
+        log.warning(
+            "[ORDER] Blocked: REAL order placement is disabled "
+            "(set MOOMOO_ALLOW_REAL_ORDERS=true to enable)"
+        )
+        return jsonify({
+            "success": False,
+            "error": "REAL order placement is disabled on this bridge (read-only mode)",
+        }), 403
 
     trd_side = TRD_SIDE_MAP.get(side_str)
     if trd_side is None:
@@ -497,7 +573,7 @@ def get_account_info():
             "unrealized_pl": unrealized_pl,
             "risk_status": risk_status,
             "currency": "USD",
-            "trd_env": "SIMULATE",
+            "trd_env": TRD_ENV_STR,
         }
         log.info("[ACCOUNT] total=%.2f cash=%.2f mv=%.2f", total_assets, cash, market_val)
         return jsonify(result)
@@ -676,8 +752,12 @@ def get_bars():
 @app.route("/accounts", methods=["GET"])
 def list_accounts():
     """
-    List all available SIMULATE trading accounts.
+    List all available trading accounts (both SIMULATE and REAL).
     Shows which account is currently active and how it was selected.
+
+    NOTE: previously this filtered to SIMULATE-only, which hid REAL accounts
+    (e.g. the FUTUJP production account) from diagnostics. It now returns every
+    account so REAL accounts are discoverable. This endpoint is read-only.
     """
     try:
         trd_ctx = _get_trd_ctx()
@@ -690,23 +770,23 @@ def list_accounts():
 
         accounts = []
         for _, row in data.iterrows():
-            trd_env = str(row.get("trd_env", ""))
-            if trd_env != "SIMULATE":
-                continue
             acc_id = int(row.get("acc_id", 0))
             accounts.append({
                 "acc_id": acc_id,
-                "trd_env": trd_env,
+                "trd_env": str(row.get("trd_env", "")),
                 "acc_type": str(row.get("acc_type", "")),
                 "sim_acc_type": str(row.get("sim_acc_type", "")),
+                "security_firm": str(row.get("security_firm", "")),
+                "acc_status": str(row.get("acc_status", "")),
                 "trdmarket_auth": str(row.get("trdmarket_auth", "")),
                 "active": acc_id == MOOMOO_ACC_ID,
             })
 
-        log.info("[ACCOUNTS] Found %d SIMULATE accounts", len(accounts))
+        log.info("[ACCOUNTS] Found %d accounts", len(accounts))
         return jsonify({
             "accounts": accounts,
             "current_acc_id": MOOMOO_ACC_ID,
+            "current_trd_env": TRD_ENV_STR,
             "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
             "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         })
@@ -724,7 +804,9 @@ if __name__ == "__main__":
     port = int(os.environ.get("BRIDGE_PORT", "11436"))
     log.info("Starting moomoo-bridge on port %d", port)
     if MOOMOO_ACC_ID:
-        log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: %d (from env)", OPEND_HOST, OPEND_PORT, TRD_MARKET, MOOMOO_ACC_ID)
+        log.info("OpenD: %s:%s  Market: %s  Env: %s  acc_id: %d (from env)", OPEND_HOST, OPEND_PORT, TRD_MARKET, TRD_ENV_STR, MOOMOO_ACC_ID)
     else:
-        log.info("OpenD: %s:%s  Market: %s  Env: SIMULATE  acc_id: auto-discover (target: %s)", OPEND_HOST, OPEND_PORT, TRD_MARKET, _SIM_ACC_TYPE_TARGET)
+        log.info("OpenD: %s:%s  Market: %s  Env: %s  acc_id: auto-discover (target: %s)", OPEND_HOST, OPEND_PORT, TRD_MARKET, TRD_ENV_STR, _SIM_ACC_TYPE_TARGET)
+    if IS_REAL:
+        log.warning("REAL trading environment active. real_orders_enabled=%s", IS_REAL and ALLOW_REAL_ORDERS)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
