@@ -138,12 +138,13 @@ def diagnose_remote(bridge_url):
 # ---------------------------------------------------------------------------
 # Local diagnostics (direct OpenD via Python SDK)
 # ---------------------------------------------------------------------------
-def diagnose_local(host, port, acc_id, security_firm):
+def diagnose_local(host, port, acc_id, security_firm, trd_env="SIMULATE"):
     """Run diagnostics using direct OpenD TCP connection."""
     section("Local OpenD Diagnostics")
     info(f"OpenD: {host}:{port}")
     info(f"acc_id: {acc_id or 'auto (0)'}")
     info(f"security_firm: {security_firm}")
+    info(f"trd_env: {trd_env}")
 
     try:
         from moomoo import (
@@ -155,10 +156,12 @@ def diagnose_local(host, port, acc_id, security_firm):
         return
 
     firm_map = {
-        "FUTUINC": SecurityFirm.FUTUINC,
-        "FUTUSECURITIES": SecurityFirm.FUTUSECURITIES,
+        name: getattr(SecurityFirm, name)
+        for name in ("FUTUINC", "FUTUSECURITIES", "FUTUJP", "FUTUSG", "FUTUAU")
+        if hasattr(SecurityFirm, name)
     }
     firm = firm_map.get(security_firm, SecurityFirm.FUTUINC)
+    env = TrdEnv.REAL if str(trd_env).upper() == "REAL" else TrdEnv.SIMULATE
 
     # 1. Trade context connection
     section("1. OpenD Trade Connection")
@@ -178,32 +181,36 @@ def diagnose_local(host, port, acc_id, security_firm):
         print("    3. Is the host reachable?")
         return
 
-    # 2. Account list
-    section("2. SIMULATE Accounts")
+    # 2. Account list (both SIMULATE and REAL — do not filter, so REAL
+    # accounts such as the FUTUJP production account are visible)
+    section("2. Accounts (all trd_env)")
     try:
         ret, data = trd_ctx.get_acc_list()
         if ret == RET_OK:
-            sim_accounts = []
+            all_accounts = []
             for _, row in data.iterrows():
-                if str(row.get("trd_env", "")) == "SIMULATE":
-                    acc = {
-                        "acc_id": int(row.get("acc_id", 0)),
-                        "sim_acc_type": str(row.get("sim_acc_type", "")),
-                        "acc_type": str(row.get("acc_type", "")),
-                        "trdmarket_auth": str(row.get("trdmarket_auth", "")),
-                    }
-                    sim_accounts.append(acc)
-                    marker = " <<<" if acc["acc_id"] == acc_id else ""
-                    print(f"    acc_id={acc['acc_id']}  sim_type={acc['sim_acc_type']}  "
-                          f"acc_type={acc['acc_type']}  market={acc['trdmarket_auth']}{marker}")
-            if not sim_accounts:
-                warn("No SIMULATE accounts found")
+                acc = {
+                    "acc_id": int(row.get("acc_id", 0)),
+                    "trd_env": str(row.get("trd_env", "")),
+                    "sim_acc_type": str(row.get("sim_acc_type", "")),
+                    "acc_type": str(row.get("acc_type", "")),
+                    "security_firm": str(row.get("security_firm", "")),
+                    "acc_status": str(row.get("acc_status", "")),
+                    "trdmarket_auth": str(row.get("trdmarket_auth", "")),
+                }
+                all_accounts.append(acc)
+                marker = " <<<" if acc["acc_id"] == acc_id else ""
+                print(f"    acc_id={acc['acc_id']}  env={acc['trd_env']}  "
+                      f"acc_type={acc['acc_type']}  firm={acc['security_firm']}  "
+                      f"sim_type={acc['sim_acc_type']}  status={acc['acc_status']}{marker}")
+            if not all_accounts:
+                warn("No accounts found")
             elif acc_id:
-                found = any(a["acc_id"] == acc_id for a in sim_accounts)
+                found = any(a["acc_id"] == acc_id for a in all_accounts)
                 if found:
-                    ok(f"Target acc_id {acc_id} found in SIMULATE accounts")
+                    ok(f"Target acc_id {acc_id} found")
                 else:
-                    fail(f"Target acc_id {acc_id} NOT found in SIMULATE accounts!")
+                    fail(f"Target acc_id {acc_id} NOT found (try a different --security-firm)")
         else:
             fail(f"get_acc_list failed: {data}")
     except Exception as e:
@@ -213,7 +220,7 @@ def diagnose_local(host, port, acc_id, security_firm):
     section("3. Account Balance (refresh_cache=True)")
     try:
         ret, data = trd_ctx.accinfo_query(
-            trd_env=TrdEnv.SIMULATE,
+            trd_env=env,
             acc_id=acc_id,
             refresh_cache=True,
         )
@@ -237,7 +244,7 @@ def diagnose_local(host, port, acc_id, security_firm):
     section("4. Open Positions (refresh_cache=True)")
     try:
         ret, data = trd_ctx.position_list_query(
-            trd_env=TrdEnv.SIMULATE,
+            trd_env=env,
             acc_id=acc_id,
             refresh_cache=True,
         )
@@ -309,7 +316,9 @@ def main():
     parser.add_argument("--acc-id", type=int, default=int(os.environ.get("MOOMOO_ACC_ID", "0")),
                         help="SIMULATE account ID (default: from MOOMOO_ACC_ID env or 0=auto)")
     parser.add_argument("--security-firm", type=str, default="FUTUINC",
-                        help="Security firm (default: FUTUINC)")
+                        help="Security firm (default: FUTUINC; use FUTUJP for the JP REAL account)")
+    parser.add_argument("--trd-env", type=str, default="SIMULATE",
+                        help="Trade environment for balance/position queries: SIMULATE (default) or REAL")
     args = parser.parse_args()
 
     print("MooMoo Integration Diagnostic Tool")
@@ -318,7 +327,7 @@ def main():
     if args.bridge:
         diagnose_remote(args.bridge)
     else:
-        diagnose_local(args.host, args.port, args.acc_id, args.security_firm)
+        diagnose_local(args.host, args.port, args.acc_id, args.security_firm, args.trd_env)
 
 
 if __name__ == "__main__":
