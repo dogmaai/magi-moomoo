@@ -1,10 +1,16 @@
 #!/bin/bash
-# start-bridge.sh — Start moomoo-bridge + tunnel (cloudflared or ngrok),
+# start-bridge.sh — Start moomoo-bridge + tunnel (named cloudflared, quick cloudflared, or ngrok),
 # then register the tunnel URL in BigQuery.
 #
 # Usage (on TIALA):
-#   cd ~/magi-moomoo && bash scripts/start-bridge.sh              # cloudflared (default)
+#   cd ~/magi-moomoo && bash scripts/start-bridge.sh              # named tunnel (if configured) or quick tunnel
 #   cd ~/magi-moomoo && bash scripts/start-bridge.sh --ngrok       # ngrok (legacy)
+#
+# Environment variables:
+#   CLOUDFLARE_TUNNEL_NAME   — Named tunnel name (e.g. "magi-bridge"). If set, uses named tunnel.
+#   CLOUDFLARE_TUNNEL_URL    — Fixed public URL for named tunnel (e.g. "https://opend.yourdomain.com").
+#                              Required when CLOUDFLARE_TUNNEL_NAME is set.
+#   MOOMOO_ACC_ID            — (optional) Pin a specific SIMULATE account by ID.
 #
 # Prerequisites:
 #   - python3 with moomoo-api, flask, google-cloud-bigquery
@@ -12,6 +18,7 @@
 #   - MooMoo OpenD running on localhost:11111
 #   - cloudflared installed (brew install cloudflared) OR ngrok
 #   - GCP credentials (ADC or GOOGLE_APPLICATION_CREDENTIALS)
+#   - For named tunnels: run `bash scripts/setup-named-tunnel.sh` first (one-time)
 
 set -e
 
@@ -76,9 +83,47 @@ if [ "${TUNNEL_MODE}" = "--ngrok" ]; then
 
   TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" 2>/dev/null || echo "unknown")
 
+elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
+  # ---- Named Tunnel (persistent URL, recommended) ----
+  if [ -z "${CLOUDFLARE_TUNNEL_URL}" ]; then
+    echo "[ERROR] CLOUDFLARE_TUNNEL_URL must be set when using named tunnel."
+    echo "        Example: export CLOUDFLARE_TUNNEL_URL=https://opend.yourdomain.com"
+    exit 1
+  fi
+
+  TUNNEL_URL="${CLOUDFLARE_TUNNEL_URL}"
+
+  # Check if named tunnel is already running
+  if pgrep -f "cloudflared.*tunnel.*run.*${CLOUDFLARE_TUNNEL_NAME}" >/dev/null 2>&1; then
+    echo "[cloudflared] Named tunnel '${CLOUDFLARE_TUNNEL_NAME}' already running"
+  else
+    echo "[cloudflared] Starting named tunnel '${CLOUDFLARE_TUNNEL_NAME}'..."
+    cloudflared tunnel --config "${HOME}/.cloudflared/config-${CLOUDFLARE_TUNNEL_NAME}.yml" run "${CLOUDFLARE_TUNNEL_NAME}" > /tmp/cloudflared.log 2>&1 &
+    CF_PID=$!
+
+    # Wait for tunnel to establish
+    sleep 3
+    if ! kill -0 "${CF_PID}" 2>/dev/null; then
+      echo "[cloudflared] Named tunnel failed to start. Check /tmp/cloudflared.log"
+      cat /tmp/cloudflared.log
+      exit 1
+    fi
+    echo "[cloudflared] Named tunnel started (PID ${CF_PID})"
+  fi
+
+  echo "[cloudflared] URL: ${TUNNEL_URL} (fixed — does not change on restart)"
+
+  # Register in BigQuery (idempotent — only inserts if URL differs from latest)
+  echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
+  python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"
+
 else
-  # ---- cloudflared (default) ----
-  echo "[cloudflared] Starting tunnel to http://localhost:${BRIDGE_PORT}..."
+  # ---- Quick Tunnel (ephemeral URL, legacy default) ----
+  echo "[cloudflared] Starting quick tunnel to http://localhost:${BRIDGE_PORT}..."
+  echo "[WARNING] Quick tunnels generate a new URL on every restart."
+  echo "          Consider using a named tunnel for stability."
+  echo "          Run: bash scripts/setup-named-tunnel.sh"
+  echo ""
   cloudflared tunnel --url "http://localhost:${BRIDGE_PORT}" > /tmp/cloudflared.log 2>&1 &
   CF_PID=$!
 
@@ -111,5 +156,10 @@ echo "=== MooMoo bridge ready ==="
 echo "  bridge:  http://localhost:${BRIDGE_PORT}"
 echo "  tunnel:  ${TUNNEL_URL}"
 echo "  BigQuery: opend-proxy → ${TUNNEL_URL}"
+if [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
+  echo "  mode:    Named Tunnel (persistent URL)"
+else
+  echo "  mode:    Quick Tunnel (ephemeral URL — changes on restart!)"
+fi
 echo ""
 echo "To stop: kill %1 %2  (or pkill -f moomoo_bridge; pkill -f cloudflared)"

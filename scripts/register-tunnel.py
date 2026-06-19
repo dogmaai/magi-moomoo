@@ -47,9 +47,37 @@ def get_ngrok_url():
     sys.exit(1)
 
 
-def update_bigquery(url):
-    """Insert tunnel URL into BigQuery service_endpoints."""
+def get_current_url():
+    """Check the latest registered URL in BigQuery."""
     from google.cloud import bigquery
+
+    client = bigquery.Client(project=PROJECT_ID)
+    fqn = f"`{PROJECT_ID}.{DATASET}.{TABLE}`"
+
+    query = f"""
+        SELECT url FROM {fqn}
+        WHERE service = @service
+        ORDER BY updated_at DESC
+        LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("service", "STRING", SERVICE_NAME),
+        ]
+    )
+    rows = list(client.query(query, job_config=job_config, location="US").result())
+    return rows[0]["url"] if rows else None
+
+
+def update_bigquery(url):
+    """Insert tunnel URL into BigQuery service_endpoints (idempotent)."""
+    from google.cloud import bigquery
+
+    # Skip if already registered with same URL
+    current = get_current_url()
+    if current == url:
+        print(f"[BigQuery] URL already current: {url} — skipping insert")
+        return
 
     client = bigquery.Client(project=PROJECT_ID)
     fqn = f"`{PROJECT_ID}.{DATASET}.{TABLE}`"

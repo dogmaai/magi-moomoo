@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.bridge.plist — macOS launchd agent for auto-starting magi-bridge + named tunnel.
+
+  Install:
+    cp scripts/com.magi.bridge.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.magi.bridge.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.magi.bridge.plist
+    rm ~/Library/LaunchAgents/com.magi.bridge.plist
+
+  Prerequisites:
+    - Named tunnel already set up (bash scripts/setup-named-tunnel.sh)
+    - Environment variables CLOUDFLARE_TUNNEL_NAME and CLOUDFLARE_TUNNEL_URL set
+    - Edit WorkingDirectory and EnvironmentVariables below to match your setup
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>scripts/start-bridge.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jun/magi-moomoo</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Edit these values after running setup-named-tunnel.sh -->
+        <key>CLOUDFLARE_TUNNEL_NAME</key>
+        <string>magi-bridge</string>
+        <key>CLOUDFLARE_TUNNEL_URL</key>
+        <string>https://opend.yourdomain.com</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-bridge.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-bridge.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
