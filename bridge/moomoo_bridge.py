@@ -393,7 +393,10 @@ def place_order():
 
         limit_price = snapshot_price if snapshot_price > 0 else request_price
         if limit_price > 0:
-            price = limit_price
+            # Round to 2 decimals — MooMoo rejects US equity orders whose price
+            # has more precision ("The precision of Price ... does not meet the
+            # specification").
+            price = round(limit_price, 2)
             order_type = OrderType.NORMAL  # LIMIT
             auto_limit = True
             source = "snapshot" if snapshot_price > 0 else "request_hint"
