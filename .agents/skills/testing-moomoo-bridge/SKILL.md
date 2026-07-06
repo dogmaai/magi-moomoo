@@ -226,3 +226,15 @@ ORDER BY timestamp DESC
 - **L7 composite score blocking**: Guard layer may block orders even when bridge is working. Check `magi_core.thoughts` for BLOCKED entries.
 - **OpenD connection refused**: OpenD might not be running on TIALA. User needs to start it manually.
 - **BigQuery column name**: Use `service='opend-proxy'` not `name='opend-proxy'` when querying `service_endpoints` table.
+
+### 10. Unit-Testing Bridge Logic with a Fake moomoo SDK (no TIALA needed)
+
+The full `place_order` Flask handler (including MARKET→LIMIT auto-conversion and price rounding) can be tested locally without OpenD by shadowing the `moomoo` SDK module:
+
+1. Create a fake `moomoo.py` earlier on `sys.path` that defines everything the bridge imports (`OpenSecTradeContext`, `OpenQuoteContext`, `TrdEnv`, `TrdSide`, `TrdMarket`, `OrderType`, `RET_OK`, `SecurityFirm`, `SubType`, `KLType`). Have `OpenQuoteContext.get_market_snapshot` return a configurable pandas DataFrame `[{"last_price": X}]` (or RET_ERROR to simulate snapshot failure) and `OpenSecTradeContext.place_order(**kwargs)` append kwargs to a captured list and return a filled DataFrame.
+2. `import moomoo_bridge` and use `bridge.app.test_client()` to POST to `/place_order` — no server process needed. Requires `pip install flask pandas`.
+3. Assert on the captured `place_order` kwargs (final `price`, `order_type`, `qty`).
+
+Gotcha: Python float rounding — `round(553.155, 2)` yields **553.15** (not 553.16) due to binary float representation. Assert "2-decimal precision" rather than a specific half-up value.
+
+The auto-LIMIT price is rounded to 2 decimals before the SDK call; unrounded prices historically caused "The precision of Price in Place Order does not meet the specification" rejections.
