@@ -15,10 +15,15 @@ Requirements:
 """
 
 import json
+import os
 import sys
 import urllib.request
 
 PROJECT_ID = "screen-share-459802"
+
+# Default service-account key on TIALA. gcloud ADC user tokens expire and
+# cannot be refreshed non-interactively, so prefer an explicit SA key.
+DEFAULT_SA_KEY = os.path.expanduser("~/.config/gcloud/service-account-key.json")
 DATASET = "magi_core"
 TABLE = "service_endpoints"
 SERVICE_NAME = "opend-proxy"
@@ -47,11 +52,28 @@ def get_ngrok_url():
     sys.exit(1)
 
 
+def _bq_client():
+    """Build a BigQuery client, preferring the local service-account key.
+
+    Priority: GOOGLE_APPLICATION_CREDENTIALS env var > DEFAULT_SA_KEY file >
+    ambient ADC (gcloud user credentials, which may be expired).
+    """
+    from google.cloud import bigquery
+
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and os.path.isfile(DEFAULT_SA_KEY):
+        from google.oauth2 import service_account
+
+        creds = service_account.Credentials.from_service_account_file(DEFAULT_SA_KEY)
+        print(f"[auth] Using service-account key: {DEFAULT_SA_KEY}")
+        return bigquery.Client(project=PROJECT_ID, credentials=creds)
+    return bigquery.Client(project=PROJECT_ID)
+
+
 def get_current_url():
     """Check the latest registered URL in BigQuery."""
     from google.cloud import bigquery
 
-    client = bigquery.Client(project=PROJECT_ID)
+    client = _bq_client()
     fqn = f"`{PROJECT_ID}.{DATASET}.{TABLE}`"
 
     query = f"""
@@ -79,7 +101,7 @@ def update_bigquery(url):
         print(f"[BigQuery] URL already current: {url} — skipping insert")
         return
 
-    client = bigquery.Client(project=PROJECT_ID)
+    client = _bq_client()
     fqn = f"`{PROJECT_ID}.{DATASET}.{TABLE}`"
 
     query = f"""
