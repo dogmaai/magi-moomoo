@@ -27,6 +27,37 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
+# Helper: stop any stale quick cloudflared tunnels targeting this bridge port.
+# Quick tunnels are ephemeral; leftover processes cause duplicate/invalid URLs
+# and can prevent the new tunnel from establishing.
+_cleanup_quick_tunnels() {
+  local pids
+  pids=$(pgrep -f "cloudflared.*tunnel.*--url.*:${BRIDGE_PORT}" 2>/dev/null || true)
+  if [ -n "${pids}" ]; then
+    echo "[cloudflared] Stopping stale quick tunnel PIDs: ${pids}"
+    kill -TERM ${pids} 2>/dev/null || true
+    sleep 2
+    kill -KILL ${pids} 2>/dev/null || true
+  fi
+}
+
+# Helper: wait for a public tunnel URL to return HTTP 200 from the bridge /health.
+# Prevents BigQuery from being updated with a tunnel that is not yet reachable.
+_wait_for_tunnel_health() {
+  local url=$1
+  local max_attempts=${2:-30}
+  local i
+  for i in $(seq 1 ${max_attempts}); do
+    if curl -s --fail --max-time 10 "${url}/health" >/dev/null 2>&1; then
+      echo "[cloudflared] Tunnel health OK: ${url}/health"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[cloudflared] Tunnel health check failed after ${max_attempts}s: ${url}/health"
+  return 1
+}
+
 # Optional: pin a specific SIMULATE account by ID.
 # If not set, the bridge auto-discovers the correct account
 # (US → STOCK_AND_OPTION, HK → STOCK) via get_acc_list().
@@ -113,6 +144,13 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
 
   echo "[cloudflared] URL: ${TUNNEL_URL} (fixed — does not change on restart)"
 
+  # Wait for tunnel to be externally reachable before claiming it is up.
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+    echo "[cloudflared] Named tunnel ${CLOUDFLARE_TUNNEL_NAME} is not serving traffic."
+    kill -KILL "${CF_PID}" 2>/dev/null || true
+    exit 1
+  fi
+
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
   echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
   python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"
@@ -124,13 +162,22 @@ else
   echo "          Consider using a named tunnel for stability."
   echo "          Run: bash scripts/setup-named-tunnel.sh"
   echo ""
-  cloudflared tunnel --url "http://localhost:${BRIDGE_PORT}" > /tmp/cloudflared.log 2>&1 &
+
+  # Kill any leftover quick tunnel processes; they can create conflicting URLs
+  # and cause control-stream failures when a fresh tunnel starts.
+  _cleanup_quick_tunnels
+
+  # Use a fresh log file so we do not read a stale URL from an old process.
+  LOG_FILE=$(mktemp /tmp/cloudflared.XXXXXX.log 2>/dev/null || echo "/tmp/cloudflared.log")
+  : > "${LOG_FILE}"
+
+  cloudflared tunnel --url "http://localhost:${BRIDGE_PORT}" > "${LOG_FILE}" 2>&1 &
   CF_PID=$!
 
   # Wait for cloudflared to output the tunnel URL
   TUNNEL_URL=""
   for i in $(seq 1 30); do
-    TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log 2>/dev/null | head -1)
+    TUNNEL_URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "${LOG_FILE}" 2>/dev/null | head -1)
     if [ -n "${TUNNEL_URL}" ]; then
       break
     fi
@@ -138,12 +185,19 @@ else
   done
 
   if [ -z "${TUNNEL_URL}" ]; then
-    echo "[cloudflared] Failed to obtain tunnel URL after 30s. Check /tmp/cloudflared.log"
-    kill "${CF_PID}" 2>/dev/null || true
+    echo "[cloudflared] Failed to obtain tunnel URL after 30s. Check ${LOG_FILE}"
+    kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
   echo "[cloudflared] Started (PID ${CF_PID})"
   echo "[cloudflared] URL: ${TUNNEL_URL}"
+
+  # Do not register until the tunnel is actually serving traffic.
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+    echo "[cloudflared] Quick tunnel is not serving traffic. Check ${LOG_FILE}"
+    kill -KILL "${CF_PID}" 2>/dev/null || true
+    exit 1
+  fi
 
   # Register tunnel URL in BigQuery
   echo "[register] Updating BigQuery service_endpoints..."
