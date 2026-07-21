@@ -226,6 +226,8 @@ ORDER BY timestamp DESC
 - **L7 composite score blocking**: Guard layer may block orders even when bridge is working. Check `magi_core.thoughts` for BLOCKED entries.
 - **OpenD connection refused**: OpenD might not be running on TIALA. User needs to start it manually.
 - **BigQuery column name**: Use `service='opend-proxy'` not `name='opend-proxy'` when querying `service_endpoints` table.
+- **Proxy 503 "moomoo-bridge unreachable" while OpenD/bridge look healthy**: the latest `opend-proxy` row in `service_endpoints` may point at a dead tunnel URL (quick-tunnel URLs change on every restart, and registration can fail silently). Diagnose by comparing the URL in the 503 error detail against `curl <candidate>/health` for recently registered URLs (check ALL services in the table — the live URL may have been mis-registered under `service='magi-moomoo'`, e.g. via the proxy's `/register` endpoint). Fix by INSERTing a fresh `('opend-proxy', <live URL>, CAST(CURRENT_TIMESTAMP() AS STRING))` row; the proxy picks the latest row per service, no redeploy needed. Verify with authenticated `GET /connectivity` → 200.
+- **Testing start-bridge.sh registration paths without TIALA**: run the script in a sandbox with a stub `bin/` prepended to PATH — fake `cloudflared` (echo a `https://...trycloudflare.com` URL then sleep), fake `curl` (exit 0 for health), and a fake `python3` that sleeps for `moomoo_bridge` and exits with a configurable code for `register-tunnel.py` (delegating everything else to `/usr/bin/python3`). This lets you assert exit codes / error banners for registration success and failure without OpenD or cloudflared installed. Remember to `pkill` the sleeping stubs afterward.
 
 ### 10. Unit-Testing Bridge Logic with a Fake moomoo SDK (no TIALA needed)
 
