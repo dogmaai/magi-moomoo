@@ -153,7 +153,13 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
 
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
   echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
-  python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"
+  if ! python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
+    echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
+    echo "        Cloud Run proxy will keep using a stale URL and return 503."
+    echo "        Fix credentials and re-run: python3 ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    kill -KILL "${CF_PID}" 2>/dev/null || true
+    exit 1
+  fi
 
 else
   # ---- Quick Tunnel (ephemeral URL, legacy default) ----
@@ -201,7 +207,13 @@ else
 
   # Register tunnel URL in BigQuery
   echo "[register] Updating BigQuery service_endpoints..."
-  python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"
+  if ! python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
+    echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
+    echo "        Cloud Run proxy will keep using a stale URL and return 503."
+    echo "        Fix credentials and re-run: python3 ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    kill -KILL "${CF_PID}" 2>/dev/null || true
+    exit 1
+  fi
 fi
 
 # --- 3. Summary ---
