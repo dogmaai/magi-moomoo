@@ -11,32 +11,53 @@ const PROXY_TIMEOUT_MS = 10000; // 10 second timeout for bridge requests
 
 // moomoo-bridge URL cache (avoid BQ query on every request)
 let cachedBridgeUrl = null;
+let cachedBridgeUrlUpdatedAt = null;
 let lastFetchTime = 0;
 const CACHE_TTL_MS = 60_000; // 1 minute
+const STALE_URL_HOURS = 24; // quick-tunnel URLs rarely survive > 24h
 
-// moomoo-bridge ngrok URLをBigQueryから取得（with cache）
+// moomoo-bridge URLをBigQueryから取得（with cache）
 async function getMoomooBridgeUrl() {
   if (cachedBridgeUrl && (Date.now() - lastFetchTime < CACHE_TTL_MS)) {
     return cachedBridgeUrl;
   }
+  // updated_at is stored as STRING; cast to TIMESTAMP for reliable ordering
   const query = `
-    SELECT url FROM \`screen-share-459802.magi_core.service_endpoints\`
+    SELECT
+      url,
+      IFNULL(SAFE_CAST(updated_at AS TIMESTAMP), TIMESTAMP('1970-01-01')) AS updated_at_ts
+    FROM \`screen-share-459802.magi_core.service_endpoints\`
     WHERE service = 'opend-proxy'
-    ORDER BY updated_at DESC
+    ORDER BY updated_at_ts DESC
     LIMIT 1
   `;
-  const [rows] = await bigquery.query({ query });
+  const [rows] = await bigquery.query({ query, location: 'US' });
   if (!rows.length) throw new Error('moomoo-bridge URL not found in BigQuery');
   cachedBridgeUrl = rows[0].url;
+  cachedBridgeUrlUpdatedAt = new Date(rows[0].updated_at_ts.value);
   lastFetchTime = Date.now();
-  console.log('[CACHE] Bridge URL refreshed:', cachedBridgeUrl);
+  const ageHours = (Date.now() - cachedBridgeUrlUpdatedAt.getTime()) / 3600000;
+  if (ageHours > STALE_URL_HOURS) {
+    console.warn(`[CACHE] Warning: opend-proxy URL is ${ageHours.toFixed(1)}h old — quick tunnel may be stale`);
+  }
+  console.log('[CACHE] Bridge URL refreshed:', cachedBridgeUrl, 'registered at', cachedBridgeUrlUpdatedAt.toISOString());
   return cachedBridgeUrl;
 }
 
 // Clear cached URL (called on connection errors so next request re-fetches)
 function invalidateBridgeUrlCache() {
   cachedBridgeUrl = null;
+  cachedBridgeUrlUpdatedAt = null;
   lastFetchTime = 0;
+}
+
+function getCachedBridgeUrlAgeText() {
+  if (!cachedBridgeUrlUpdatedAt) return null;
+  const ageHours = (Date.now() - cachedBridgeUrlUpdatedAt.getTime()) / 3600000;
+  if (ageHours > 6) {
+    return `opend-proxy URL is ${ageHours.toFixed(1)}h old (quick tunnel may be stale; run start-bridge.sh on TIALA or switch to a named tunnel)`;
+  }
+  return null;
 }
 
 // moomoo-bridgeへプロキシリクエスト送信 (with timeout)
@@ -53,15 +74,16 @@ async function proxyToBridge(path, options = {}) {
     const body = await res.json();
     return { status: res.status, body };
   } catch (e) {
+    // Any failure (timeout, DNS, connection reset, non-JSON response from a dead tunnel)
+    // should clear the cache so the next request re-fetches the latest BigQuery row.
+    const ageHint = getCachedBridgeUrlAgeText();
+    invalidateBridgeUrlCache();
     if (e.name === 'AbortError') {
-      invalidateBridgeUrlCache();
-      throw new Error('moomoo-bridge timeout');
+      throw new Error('moomoo-bridge timeout' + (ageHint ? `; ${ageHint}` : ''));
     }
-    // Connection errors (tunnel URL stale) → clear cache so next request re-fetches
-    if (e.code === 'ENOTFOUND' || e.code === 'ECONNREFUSED' || e.code === 'ECONNRESET') {
-      invalidateBridgeUrlCache();
-    }
-    throw e;
+    let message = e.message || e.name || 'unknown bridge error';
+    if (ageHint) message += `; ${ageHint}`;
+    throw new Error(message);
   } finally {
     clearTimeout(timeoutId);
   }
@@ -76,7 +98,8 @@ app.get('/health', (req, res) => {
 app.get('/url', async (req, res) => {
   try {
     const url = await getMoomooBridgeUrl();
-    res.json({ url });
+    const ageText = getCachedBridgeUrlAgeText();
+    res.json({ url, stale_hint: ageText || null });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

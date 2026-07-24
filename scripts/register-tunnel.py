@@ -76,10 +76,11 @@ def get_current_url():
     client = _bq_client()
     fqn = f"`{PROJECT_ID}.{DATASET}.{TABLE}`"
 
+    # updated_at is stored as STRING; cast to TIMESTAMP for reliable ordering
     query = f"""
         SELECT url FROM {fqn}
         WHERE service = @service
-        ORDER BY updated_at DESC
+        ORDER BY IFNULL(SAFE_CAST(updated_at AS TIMESTAMP), TIMESTAMP('1970-01-01')) DESC
         LIMIT 1
     """
     job_config = bigquery.QueryJobConfig(
