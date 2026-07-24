@@ -25,6 +25,12 @@ MOOMOO_ACC_ID             Pin account id         (REAL: required; SIMULATE: 0=au
 MOOMOO_TRADE_PASSWORD     Trade unlock password  (REAL only; or use _MD5 variant)
 MOOMOO_TRADE_PASSWORD_MD5 Pre-computed MD5        (REAL only; alternative to plaintext)
 MOOMOO_ALLOW_REAL_ORDERS  true to allow REAL order placement (default false = read-only)
+
+OpenTelemetry (OpenLIT)
+---------------------
+OTEL_EXPORTER_OTLP_ENDPOINT  OTLP gateway URL (set by start-bridge.sh)
+OTEL_EXPORTER_OTLP_HEADERS  Authorization header for Grafana Cloud (set by start-bridge.sh)
+GRAFANA_OTLP_TOKEN         Cloud Access Policy token with metrics:write + traces:write
 """
 
 import os
@@ -33,6 +39,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
+
+try:
+    import openlit
+except ImportError:
+    openlit = None
 from moomoo import (
     OpenSecTradeContext,
     OpenQuoteContext,
@@ -136,6 +147,15 @@ def _safe_float(val, default=0.0):
         return default
 
 app = Flask(__name__)
+
+# OpenLIT / OpenTelemetry instrumentation.  Enabled automatically when the
+# `openlit` package is installed (pip install -r bridge/requirements.txt).
+if openlit:
+    try:
+        openlit.init()
+        log.info("[OTEL] OpenLIT instrumentation initialized")
+    except Exception as e:
+        log.warning("[OTEL] OpenLIT init failed: %s", e)
 
 # ---------------------------------------------------------------------------
 # Context helpers  — lazy-init, reconnect on failure

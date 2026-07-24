@@ -27,6 +27,24 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
+# OpenTelemetry OTLP configuration for Grafana Cloud.
+# Set GRAFANA_OTLP_TOKEN in the TIALA environment with scopes:
+#   metrics:write, traces:write
+# The token is kept out of source control; this script derives the standard
+# OTEL_EXPORTER_OTLP_HEADERS from it at runtime.
+OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp}"
+OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
+export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME
+if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
+  GRAFANA_INSTANCE_ID="${GRAFANA_INSTANCE_ID:-1557976}"
+  OTLP_AUTH="$(printf '%s:%s' "${GRAFANA_INSTANCE_ID}" "${GRAFANA_OTLP_TOKEN}" | base64 | tr -d '\n\r')"
+  OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${OTLP_AUTH}"
+  export OTEL_EXPORTER_OTLP_HEADERS GRAFANA_INSTANCE_ID
+  echo "[otel] OTLP export enabled: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID})"
+else
+  echo "[otel] GRAFANA_OTLP_TOKEN not set — OTLP export disabled"
+fi
+
 # Helper: stop any stale quick cloudflared tunnels targeting this bridge port.
 # Quick tunnels are ephemeral; leftover processes cause duplicate/invalid URLs
 # and can prevent the new tunnel from establishing.
