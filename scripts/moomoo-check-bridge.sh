@@ -20,7 +20,9 @@ else
 from google.cloud import bigquery
 c = bigquery.Client(project='screen-share-459802')
 rows = list(c.query('''SELECT url FROM \`screen-share-459802.magi_core.service_endpoints\`
-  WHERE service = \"opend-proxy\" ORDER BY updated_at DESC LIMIT 1''', location='US').result())
+  WHERE service = \"opend-proxy\"
+  ORDER BY IFNULL(SAFE_CAST(updated_at AS TIMESTAMP), TIMESTAMP('1970-01-01')) DESC
+  LIMIT 1''', location='US').result())
 print(rows[0].url if rows else '')
 " 2>/dev/null)
     if [ -z "${BRIDGE_URL}" ]; then
