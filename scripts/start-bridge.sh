@@ -28,13 +28,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
 # OpenTelemetry OTLP configuration for Grafana Cloud.
-# Set GRAFANA_OTLP_TOKEN in the TIALA environment with scopes:
-#   metrics:write, traces:write
+# Token precedence:
+#   1. GRAFANA_OTLP_TOKEN
+#   2. SIGIL_AUTH_TOKEN (reused from magi-core if already exported on TIALA)
+#   3. SIGIL_AUTH_TOKEN fetched from GCP Secret Manager (if gcloud is available)
+# Required scopes: metrics:write, traces:write.
 # The token is kept out of source control; this script derives the standard
 # OTEL_EXPORTER_OTLP_HEADERS from it at runtime.
 OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp}"
 OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME
+
+GRAFANA_OTLP_TOKEN="${GRAFANA_OTLP_TOKEN:-${SIGIL_AUTH_TOKEN:-}}"
+if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
+  GRAFANA_OTLP_TOKEN="$(gcloud secrets versions access latest --secret=SIGIL_AUTH_TOKEN --project=screen-share-459802 2>/dev/null || true)"
+  if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
+    echo "[otel] Fetched SIGIL_AUTH_TOKEN from Secret Manager"
+  fi
+fi
+
 if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
   GRAFANA_INSTANCE_ID="${GRAFANA_INSTANCE_ID:-1557976}"
   OTLP_AUTH="$(printf '%s:%s' "${GRAFANA_INSTANCE_ID}" "${GRAFANA_OTLP_TOKEN}" | base64 | tr -d '\n\r')"
@@ -42,7 +54,7 @@ if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
   export OTEL_EXPORTER_OTLP_HEADERS GRAFANA_INSTANCE_ID
   echo "[otel] OTLP export enabled: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID})"
 else
-  echo "[otel] GRAFANA_OTLP_TOKEN not set — OTLP export disabled"
+  echo "[otel] GRAFANA_OTLP_TOKEN / SIGIL_AUTH_TOKEN not set — OTLP export disabled"
 fi
 
 # Helper: stop any stale quick cloudflared tunnels targeting this bridge port.
