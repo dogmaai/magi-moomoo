@@ -146,6 +146,7 @@ else
   BRIDGE_PID=$!
   if ! _wait_for_bridge_health "${BRIDGE_PORT}" 30; then
     echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT} and OpenD."
+    kill -KILL "${BRIDGE_PID}" 2>/dev/null || true
     exit 1
   fi
   echo "[bridge] Started and healthy (PID ${BRIDGE_PID})"
