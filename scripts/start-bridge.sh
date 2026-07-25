@@ -71,11 +71,48 @@ _cleanup_quick_tunnels() {
   fi
 }
 
+# Helper: wait for the local bridge /health endpoint to return HTTP 200.
+_wait_for_bridge_health() {
+  local port=$1
+  local max_attempts=${2:-30}
+  local i
+  for i in $(seq 1 ${max_attempts}); do
+    if curl -s --fail --max-time 2 "http://localhost:${port}/health" >/dev/null 2>&1; then
+      echo "[bridge] Health OK: http://localhost:${port}/health"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[bridge] Health check failed after ${max_attempts}s: http://localhost:${port}/health"
+  return 1
+}
+
+# Helper: kill any stale moomoo_bridge.py process on the bridge port.
+_kill_stale_bridge() {
+  local port=$1
+  local pids
+  pids=$(pgrep -f "python3.*moomoo_bridge.py" 2>/dev/null || true)
+  if [ -n "${pids}" ]; then
+    echo "[bridge] Killing stale bridge process(es): ${pids}"
+    kill -TERM ${pids} 2>/dev/null || true
+    sleep 2
+    kill -KILL ${pids} 2>/dev/null || true
+  fi
+  # Also free the port if a left-over listener is still bound.
+  local lsof_pids
+  lsof_pids=$(lsof -t -i ":${port}" 2>/dev/null || true)
+  if [ -n "${lsof_pids}" ]; then
+    echo "[bridge] Killing left-over port ${port} listener(s): ${lsof_pids}"
+    kill -KILL ${lsof_pids} 2>/dev/null || true
+    sleep 1
+  fi
+}
+
 # Helper: wait for a public tunnel URL to return HTTP 200 from the bridge /health.
 # Prevents BigQuery from being updated with a tunnel that is not yet reachable.
 _wait_for_tunnel_health() {
   local url=$1
-  local max_attempts=${2:-30}
+  local max_attempts=${2:-120}
   local i
   for i in $(seq 1 ${max_attempts}); do
     if curl -s --fail --max-time 10 "${url}/health" >/dev/null 2>&1; then
@@ -100,18 +137,18 @@ else
 fi
 
 # --- 1. Start moomoo-bridge if not running ---
-if lsof -i ":${BRIDGE_PORT}" >/dev/null 2>&1; then
-  echo "[bridge] Already running on port ${BRIDGE_PORT}"
+if curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
+  echo "[bridge] Already running and healthy on port ${BRIDGE_PORT}"
 else
   echo "[bridge] Starting ${BRIDGE_SCRIPT} on port ${BRIDGE_PORT}..."
+  _kill_stale_bridge "${BRIDGE_PORT}"
   python3 "${BRIDGE_SCRIPT}" &
   BRIDGE_PID=$!
-  sleep 2
-  if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
-    echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT}."
+  if ! _wait_for_bridge_health "${BRIDGE_PORT}" 30; then
+    echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT} and OpenD."
     exit 1
   fi
-  echo "[bridge] Started (PID ${BRIDGE_PID})"
+  echo "[bridge] Started and healthy (PID ${BRIDGE_PID})"
 fi
 
 # --- 2. Start tunnel ---
