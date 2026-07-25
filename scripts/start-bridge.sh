@@ -212,7 +212,7 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
   echo "[cloudflared] URL: ${TUNNEL_URL} (fixed — does not change on restart)"
 
   # Wait for tunnel to be externally reachable before claiming it is up.
-  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 120; then
     echo "[cloudflared] Named tunnel ${CLOUDFLARE_TUNNEL_NAME} is not serving traffic."
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
@@ -266,7 +266,7 @@ else
   echo "[cloudflared] URL: ${TUNNEL_URL}"
 
   # Do not register until the tunnel is actually serving traffic.
-  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 120; then
     echo "[cloudflared] Quick tunnel is not serving traffic. Check ${LOG_FILE}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
