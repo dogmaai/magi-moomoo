@@ -213,10 +213,11 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
   echo "[cloudflared] URL: ${TUNNEL_URL} (fixed — does not change on restart)"
 
   # Wait for tunnel to be externally reachable before claiming it is up.
-  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 120; then
-    echo "[cloudflared] Named tunnel ${CLOUDFLARE_TUNNEL_NAME} is not serving traffic."
-    kill -KILL "${CF_PID}" 2>/dev/null || true
-    exit 1
+  # TIALA may not be able to curl its own public hostname (hairpin NAT),
+  # so do not treat a failed check as fatal.
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+    echo "[cloudflared] WARNING: Could not verify named tunnel '${CLOUDFLARE_TUNNEL_NAME}' from this host."
+    echo "[cloudflared]          This is common with hairpin NAT. Continuing registration."
   fi
 
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
@@ -267,10 +268,14 @@ else
   echo "[cloudflared] URL: ${TUNNEL_URL}"
 
   # Do not register until the tunnel is actually serving traffic.
-  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 120; then
-    echo "[cloudflared] Quick tunnel is not serving traffic. Check ${LOG_FILE}"
-    kill -KILL "${CF_PID}" 2>/dev/null || true
-    exit 1
+  # From TIALA, hairpin NAT can prevent this host from curling its own
+  # public quick-tunnel URL even though the tunnel is reachable externally.
+  # The health check is a best-effort signal only; if it fails we still
+  # register the URL and the operator can verify from another network.
+  if ! _wait_for_tunnel_health "${TUNNEL_URL}" 30; then
+    echo "[cloudflared] WARNING: Could not confirm quick tunnel from this host (hairpin NAT?)."
+    echo "[cloudflared]          Tunnel may still be reachable from the internet. Check ${LOG_FILE}"
+    echo "[cloudflared]          and verify with: curl ${TUNNEL_URL}/health"
   fi
 
   # Register tunnel URL in BigQuery
