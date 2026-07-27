@@ -137,6 +137,17 @@ logging.basicConfig(
 )
 log = logging.getLogger("moomoo-bridge")
 
+# OpenLIT / OpenTelemetry instrumentation.  Enabled automatically when the
+# `openlit` package is installed (pip install -r bridge/requirements.txt).
+# Must be initialized *before* the Flask app is created so Flask is
+# auto-instrumented; otherwise the already-created app is not traced.
+if openlit:
+    try:
+        openlit.init()
+        log.info("[OTEL] OpenLIT instrumentation initialized")
+    except Exception as e:
+        log.warning("[OTEL] OpenLIT init failed: %s", e)
+
 
 def _safe_float(val, default=0.0):
     """Convert a value to float, returning *default* for 'N/A' or invalid."""
@@ -148,15 +159,6 @@ def _safe_float(val, default=0.0):
         return default
 
 app = Flask(__name__)
-
-# OpenLIT / OpenTelemetry instrumentation.  Enabled automatically when the
-# `openlit` package is installed (pip install -r bridge/requirements.txt).
-if openlit:
-    try:
-        openlit.init()
-        log.info("[OTEL] OpenLIT instrumentation initialized")
-    except Exception as e:
-        log.warning("[OTEL] OpenLIT init failed: %s", e)
 
 # ---------------------------------------------------------------------------
 # Context helpers  — lazy-init, reconnect on failure
