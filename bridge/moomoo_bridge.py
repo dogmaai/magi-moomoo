@@ -41,10 +41,20 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
 
+# OpenTelemetry / Flask instrumentation (lighter than openlit and compatible
+# with moomoo-api's protobuf 3.x pin).
+_OTEL = False
 try:
-    import openlit
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource, SERVICE_NAME, DEPLOYMENT_ENVIRONMENT
+    from opentelemetry.instrumentation.flask import FlaskInstrumentor
+    _OTEL = True
 except ImportError:
-    openlit = None
+    pass
+
 from moomoo import (
     OpenSecTradeContext,
     OpenQuoteContext,
@@ -137,17 +147,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("moomoo-bridge")
 
-# OpenLIT / OpenTelemetry instrumentation.  Enabled automatically when the
-# `openlit` package is installed (pip install -r bridge/requirements.txt).
-# Must be initialized *before* the Flask app is created so Flask is
-# auto-instrumented; otherwise the already-created app is not traced.
-if openlit:
-    try:
-        openlit.init()
-        log.info("[OTEL] OpenLIT instrumentation initialized")
-    except Exception as e:
-        log.warning("[OTEL] OpenLIT init failed: %s", e)
-
 
 def _safe_float(val, default=0.0):
     """Convert a value to float, returning *default* for 'N/A' or invalid."""
@@ -159,6 +158,26 @@ def _safe_float(val, default=0.0):
         return default
 
 app = Flask(__name__)
+
+# OpenTelemetry / Flask instrumentation.
+# Enabled when the packages in bridge/requirements.txt are installed.
+if _OTEL:
+    try:
+        _resource = Resource.create(
+            {
+                SERVICE_NAME: os.environ.get("OTEL_SERVICE_NAME", "moomoo-bridge"),
+                DEPLOYMENT_ENVIRONMENT: os.environ.get("OTEL_DEPLOYMENT_ENVIRONMENT", "production"),
+            }
+        )
+        _provider = TracerProvider(resource=_resource)
+        _provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter())
+        )
+        trace.set_tracer_provider(_provider)
+        FlaskInstrumentor().instrument_app(app)
+        log.info("[OTEL] OpenTelemetry Flask instrumentation initialized")
+    except Exception as e:
+        log.warning("[OTEL] OpenTelemetry init failed: %s", e)
 
 # ---------------------------------------------------------------------------
 # Context helpers  — lazy-init, reconnect on failure
