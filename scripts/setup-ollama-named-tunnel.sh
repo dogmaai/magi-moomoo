@@ -103,9 +103,7 @@ echo "  Tunnel ID: ${TUNNEL_ID}"
 echo ""
 echo "[Step 4] Creating DNS route: ${HOSTNAME} -> tunnel..."
 if ! cloudflared tunnel route dns "${TUNNEL_NAME}" "${HOSTNAME}" 2>&1; then
-  echo "[ERROR] Failed to create DNS route for ${HOSTNAME}."
-  echo "        Make sure the domain is added to your Cloudflare account."
-  exit 1
+  echo "  (DNS route may already exist — continuing)"
 fi
 
 # --- Step 5: Write cloudflared config file ---
