@@ -37,6 +37,7 @@ fi
 HOSTNAME="$1"
 TUNNEL_NAME="${OLLAMA_TUNNEL_NAME:-magi-ollama}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
+OLLAMA_HOST_HEADER="${OLLAMA_HOST_HEADER:-localhost:${OLLAMA_PORT}}"
 PROJECT_ID="${GCP_PROJECT:-screen-share-459802}"
 SECRET_NAME="OLLAMA_BASE_URL"
 CONFIG_FILE="${HOME}/.cloudflared/config-${TUNNEL_NAME}.yml"
@@ -51,11 +52,12 @@ if [ -z "${GOOGLE_APPLICATION_CREDENTIALS}" ] && [ -f "${DEFAULT_SA_KEY}" ]; the
 fi
 
 echo "=== Ollama Named Tunnel Setup ==="
-echo "  Hostname:    ${HOSTNAME}"
-echo "  Tunnel name: ${TUNNEL_NAME}"
-echo "  Ollama port: ${OLLAMA_PORT}"
-echo "  Config:      ${CONFIG_FILE}"
-echo "  GCP project: ${PROJECT_ID}"
+echo "  Hostname:       ${HOSTNAME}"
+echo "  Tunnel name:    ${TUNNEL_NAME}"
+echo "  Ollama port:    ${OLLAMA_PORT}"
+echo "  Host header:    ${OLLAMA_HOST_HEADER}"
+echo "  Config:         ${CONFIG_FILE}"
+echo "  GCP project:    ${PROJECT_ID}"
 echo ""
 
 # --- Step 1: Check cloudflared login ---
@@ -117,6 +119,8 @@ credentials-file: ${HOME}/.cloudflared/${TUNNEL_ID}.json
 ingress:
   - hostname: ${HOSTNAME}
     service: http://localhost:${OLLAMA_PORT}
+    originRequest:
+      httpHostHeader: ${OLLAMA_HOST_HEADER}
   - service: http_status:404
 EOF
 echo "  Config written"
