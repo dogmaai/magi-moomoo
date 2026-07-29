@@ -168,7 +168,10 @@ The setup script:
 - creates tunnel `magi-ollama` (or `$OLLAMA_TUNNEL_NAME`)
 - routes the chosen hostname to the tunnel
 - writes `~/.cloudflared/config-magi-ollama.yml`
+- sets `httpHostHeader` to `localhost:${OLLAMA_PORT}` by default to satisfy Ollama's CORS/Host validation
 - updates Secret Manager `OLLAMA_BASE_URL` to `https://<hostname>`
+
+Use `OLLAMA_HOST_HEADER` to override the Host header sent to Ollama (e.g. if a local proxy at `11435` rewrites the header).
 
 After setup, ADAM's Cloud Run Job will pick up the new secret value on the
 next scheduled run.
