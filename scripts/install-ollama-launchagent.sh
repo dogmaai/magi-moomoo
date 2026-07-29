@@ -45,7 +45,7 @@ fi
 mkdir -p "${CLOUDFLARED_DIR}"
 
 echo "[Step 1] Fetching tunnel token from Secret Manager..."
-TOKEN=$(gcloud secrets versions access latest --secret="${TOKEN_SECRET}" --project="${PROJECT_ID}" | tr -d '\n')
+export TOKEN=$(gcloud secrets versions access latest --secret="${TOKEN_SECRET}" --project="${PROJECT_ID}" | tr -d '\n')
 if [ -z "${TOKEN}" ]; then
   echo "[ERROR] Failed to fetch ${TOKEN_SECRET}"
   exit 1
@@ -97,6 +97,15 @@ if [ ! -f "${REPO_DIR}/${PLIST_SRC}" ]; then
   exit 1
 fi
 cp "${REPO_DIR}/${PLIST_SRC}" "${PLIST_DST}"
+
+# The plist template has a hardcoded WorkingDirectory for /Users/jun/magi-moomoo.
+# Update it to the actual repo path so the relative start script is found.
+if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Set :WorkingDirectory ${REPO_DIR}" "${PLIST_DST}"
+else
+  # Fallback for non-macOS development/testing
+  sed -i '' -e "s#<string>/Users/jun/magi-moomoo</string>#<string>${REPO_DIR}</string>#" "${PLIST_DST}" 2>/dev/null || true
+fi
 
 # Unload old agent if loaded, then load.
 if launchctl list "${PLIST_NAME}" >/dev/null 2>&1; then
