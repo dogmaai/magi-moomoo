@@ -229,7 +229,7 @@ The setup/install script:
 - routes the chosen hostname to the tunnel
 - writes `~/.cloudflared/config-magi-openclaw.yml`
 - registers `openclaw` in BigQuery `service_endpoints` so `magi-moni` and Devin can discover it
-- prints the base64 `OPENCLAW_TUNNEL_TOKEN` to store in Secret Manager (setup only)
+- stores the base64 `OPENCLAW_TUNNEL_TOKEN` in Secret Manager for LaunchAgent installs (setup only; falls back to printing the local file path if `gcloud` is unavailable)
 
 Use `OPENCLAW_PORT` / `OPENCLAW_HOST_HEADER` env vars to override the local
 OpenClaw Gateway port or Host header.
