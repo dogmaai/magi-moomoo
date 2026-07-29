@@ -142,6 +142,37 @@ Cloud Scheduler → magi-core (Cloud Run) → magi-moomoo (Cloud Run)
                                          OpenD (TIALA) → MooMoo Server
 ```
 
+## Ollama Named Tunnel (ADAM / PLM)
+
+ADAM uses a self-hosted Ollama instance on TIALA. The Cloud Run Job reads
+`OLLAMA_BASE_URL` from Secret Manager. By default the URL is a temporary
+`*.trycloudflare.com` quick tunnel that changes on restart, causing failures
+when it goes stale.
+
+Use these scripts to create a permanent Cloudflare Named Tunnel pointing to
+`localhost:11434` and write the fixed URL to `OLLAMA_BASE_URL`:
+
+```bash
+# One-time setup (requires cloudflared login and a Cloudflare-managed domain)
+bash scripts/setup-ollama-named-tunnel.sh ollama.khaos.company
+
+# Start the tunnel in the foreground
+bash scripts/start-ollama-named-tunnel.sh
+
+# Or install as a persistent macOS LaunchAgent
+cp scripts/com.magi.ollama.cloudflared.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.magi.ollama.cloudflared.plist
+```
+
+The setup script:
+- creates tunnel `magi-ollama` (or `$OLLAMA_TUNNEL_NAME`)
+- routes the chosen hostname to the tunnel
+- writes `~/.cloudflared/config-magi-ollama.yml`
+- updates Secret Manager `OLLAMA_BASE_URL` to `https://<hostname>`
+
+After setup, ADAM's Cloud Run Job will pick up the new secret value on the
+next scheduled run.
+
 ## BigQuery Service Discovery
 
 | service | registered by | description |
