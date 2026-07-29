@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.openclaw.cloudflared.plist — macOS LaunchAgent for the OpenClaw Cloudflare named tunnel.
+
+  Install:
+    cp scripts/com.magi.openclaw.cloudflared.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.magi.openclaw.cloudflared.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.magi.openclaw.cloudflared.plist
+    rm ~/Library/LaunchAgents/com.magi.openclaw.cloudflared.plist
+
+  Prerequisites:
+    - Run: bash scripts/setup-openclaw-named-tunnel.sh <hostname> (one-time)
+    - Run: bash scripts/install-openclaw-launchagent.sh <hostname> (writes credentials + config)
+    - Update WorkingDirectory below to match your local repo path.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.openclaw.cloudflared</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>scripts/start-openclaw-named-tunnel.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jun/magi-moomoo</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-openclaw-cloudflared.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-openclaw-cloudflared.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
