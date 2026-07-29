@@ -159,17 +159,22 @@ bash scripts/setup-ollama-named-tunnel.sh ollama.khaos.company
 # Start the tunnel in the foreground
 bash scripts/start-ollama-named-tunnel.sh
 
-# Or install as a persistent macOS LaunchAgent
+# Or install as a persistent macOS LaunchAgent (one command)
+# This fetches OLLAMA_TUNNEL_TOKEN from Secret Manager, writes the credentials
+# file, and registers the LaunchAgent.
+bash scripts/install-ollama-launchagent.sh ollama.khaos.company
+
+# Or install the LaunchAgent manually
 cp scripts/com.magi.ollama.cloudflared.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.magi.ollama.cloudflared.plist
 ```
 
-The setup script:
-- creates tunnel `magi-ollama` (or `$OLLAMA_TUNNEL_NAME`)
+The setup/install script:
+- creates the tunnel (setup only) or fetches an existing token (install only)
 - routes the chosen hostname to the tunnel
 - writes `~/.cloudflared/config-magi-ollama.yml`
 - sets `httpHostHeader` to `localhost:${OLLAMA_PORT}` by default to satisfy Ollama's CORS/Host validation
-- updates Secret Manager `OLLAMA_BASE_URL` to `https://<hostname>`
+- updates Secret Manager `OLLAMA_BASE_URL` to `https://<hostname>` (setup only)
 
 Use `OLLAMA_HOST_HEADER` to override the Host header sent to Ollama (e.g. if a local proxy at `11435` rewrites the header).
 
