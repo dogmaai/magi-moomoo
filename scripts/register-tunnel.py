@@ -26,7 +26,7 @@ PROJECT_ID = "screen-share-459802"
 DEFAULT_SA_KEY = os.path.expanduser("~/.config/gcloud/service-account-key.json")
 DATASET = "magi_core"
 TABLE = "service_endpoints"
-SERVICE_NAME = "opend-proxy"
+SERVICE_NAME = os.environ.get("SERVICE_NAME", "opend-proxy")
 
 NGROK_API = "http://localhost:4040/api/tunnels"
 
@@ -119,12 +119,34 @@ def update_bigquery(url):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 register-tunnel.py <URL>")
-        print("       python3 register-tunnel.py --ngrok")
+    args = sys.argv[1:]
+    global SERVICE_NAME
+
+    # Allow --service <name> or --service=<name> before the URL argument.
+    while args and args[0].startswith("--service"):
+        if args[0].startswith("--service="):
+            SERVICE_NAME = args[0].split("=", 1)[1]
+            args = args[1:]
+        elif len(args) >= 2 and args[0] == "--service":
+            SERVICE_NAME = args[1]
+            args = args[2:]
+        else:
+            print("Usage: python3 register-tunnel.py [--service <name>] <URL>")
+            print("       python3 register-tunnel.py [--service <name>] --ngrok")
+            print("")
+            print("Default service: opend-proxy")
+            print("Use SERVICE_NAME env var or --service to override (e.g. openclaw).")
+            sys.exit(1)
+
+    if len(args) < 1:
+        print("Usage: python3 register-tunnel.py [--service <name>] <URL>")
+        print("       python3 register-tunnel.py [--service <name>] --ngrok")
+        print("")
+        print(f"Default service: {SERVICE_NAME}")
+        print("Use SERVICE_NAME env var or --service to override (e.g. openclaw).")
         sys.exit(1)
 
-    arg = sys.argv[1]
+    arg = args[0]
 
     if arg == "--ngrok":
         url = get_ngrok_url()
@@ -135,6 +157,7 @@ def main():
     else:
         print(f"[ERROR] Invalid argument: {arg}")
         print("Provide a URL (https://...) or --ngrok")
+        print("Override service with --service <name> or SERVICE_NAME env var.")
         sys.exit(1)
 
     update_bigquery(url)

@@ -23,6 +23,10 @@ Run `bash scripts/setup-tools.sh` to install everything.
 | `moomoo-liquidate.py` | Sell all open positions (account reset helper) |
 | `register-tunnel.py` | Register tunnel URL in BigQuery `service_endpoints` |
 | `register-service.py` | Register magi-moomoo Cloud Run URL in BigQuery |
+| `setup-openclaw-named-tunnel.sh` | Create a Cloudflare Named Tunnel for the OpenClaw Gateway |
+| `start-openclaw-named-tunnel.sh` | Start the OpenClaw named tunnel |
+| `install-openclaw-launchagent.sh` | Install a LaunchAgent for the OpenClaw named tunnel |
+| `com.magi.openclaw.cloudflared.plist` | macOS LaunchAgent template for OpenClaw tunnel |
 
 ## Quick Start (TIALA)
 
@@ -187,5 +191,45 @@ next scheduled run.
 |---|---|---|
 | `magi-moomoo` | `deploy.yml` / `register-service.py` | Cloud Run proxy URL |
 | `opend-proxy` | `start-bridge.sh` / `register-tunnel.py` | Bridge tunnel URL (cloudflared/ngrok) |
+| `openclaw` | `setup-openclaw-named-tunnel.sh` / `install-openclaw-launchagent.sh` | OpenClaw Gateway URL for Devin/AKA-1 TIALA ops |
 
 magi-core looks up `magi-moomoo`, and the proxy looks up `opend-proxy`.
+`magi-moni` / Devin looks up `openclaw` to reach TIALA.
+
+## OpenClaw Named Tunnel (Devin / AKA-1 TIALA operations)
+
+`magi-moni` uses the OpenClaw Gateway on TIALA for remote service checks, shell
+commands, screenshots, and GUI actions. By default it discovers the gateway URL
+from BigQuery `service_endpoints` (service=`openclaw`). The old quick tunnel
+(`*.trycloudflare.com`) expired whenever cloudflared restarted, blocking Devin
+from operating TIALA.
+
+Use these scripts to create a permanent Cloudflare Named Tunnel pointing to
+`localhost:18789` and register the fixed URL in BigQuery:
+
+```bash
+# One-time setup (requires cloudflared login and a Cloudflare-managed domain)
+bash scripts/setup-openclaw-named-tunnel.sh openclaw.khaos.company
+
+# Start the tunnel in the foreground
+bash scripts/start-openclaw-named-tunnel.sh
+
+# Or install as a persistent macOS LaunchAgent (one command)
+# This fetches OPENCLAW_TUNNEL_TOKEN from Secret Manager, writes the credentials
+# file, and registers the LaunchAgent.
+bash scripts/install-openclaw-launchagent.sh openclaw.khaos.company
+
+# Or install the LaunchAgent manually
+cp scripts/com.magi.openclaw.cloudflared.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.magi.openclaw.cloudflared.plist
+```
+
+The setup/install script:
+- creates the tunnel (setup only) or fetches an existing token (install only)
+- routes the chosen hostname to the tunnel
+- writes `~/.cloudflared/config-magi-openclaw.yml`
+- registers `openclaw` in BigQuery `service_endpoints` so `magi-moni` and Devin can discover it
+- stores the base64 `OPENCLAW_TUNNEL_TOKEN` in Secret Manager for LaunchAgent installs (setup only; falls back to printing the local file path if `gcloud` is unavailable)
+
+Use `OPENCLAW_PORT` / `OPENCLAW_HOST_HEADER` env vars to override the local
+OpenClaw Gateway port or Host header.
