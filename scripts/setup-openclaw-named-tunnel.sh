@@ -80,10 +80,25 @@ fi
 
 if [ "${HAVE_AUTH}" -eq 0 ] && [ -f "${CONFIG_FILE}" ]; then
   TUNNEL_ID=$(grep -oE '[0-9a-f-]{36}' "${CONFIG_FILE}" | head -1)
-  if [ -n "${TUNNEL_ID}" ] && [ -f "${HOME}/.cloudflared/${TUNNEL_ID}.json" ]; then
-    EXISTING_TUNNEL=1
+  if [ -n "${TUNNEL_ID}" ]; then
+    # Prefer the credentials-file path written in the existing config.
+    CONF_CRED_FILE=$(awk '/^credentials-file:/{print $2}' "${CONFIG_FILE}" | head -1)
+    CONF_CRED_FILE="${CONF_CRED_FILE/#\~/${HOME}}"
+    if [ -n "${CONF_CRED_FILE}" ] && [ -f "${CONF_CRED_FILE}" ]; then
+      TUNNEL_CRED_FILE="${CONF_CRED_FILE}"
+      EXISTING_TUNNEL=1
+    elif [ -f "${HOME}/.cloudflared/${TUNNEL_ID}.json" ]; then
+      TUNNEL_CRED_FILE="${HOME}/.cloudflared/${TUNNEL_ID}.json"
+      EXISTING_TUNNEL=1
+    elif [ -f "${HOME}/.cloudflared/${TUNNEL_NAME}.json" ]; then
+      TUNNEL_CRED_FILE="${HOME}/.cloudflared/${TUNNEL_NAME}.json"
+      EXISTING_TUNNEL=1
+    fi
+  fi
+  if [ -n "${EXISTING_TUNNEL}" ]; then
     echo "[Step 1] No Cloudflare login certificate found, but existing tunnel config found."
     echo "         Tunnel ID: ${TUNNEL_ID}"
+    echo "         Credentials: ${TUNNEL_CRED_FILE}"
     echo "         Will reuse the existing tunnel (DNS route must already exist)."
   fi
 fi
@@ -130,6 +145,7 @@ else
   echo "  Created tunnel ID: ${TUNNEL_ID}"
 fi
 echo "  Tunnel ID: ${TUNNEL_ID}"
+TUNNEL_CRED_FILE="${TUNNEL_CRED_FILE:-${HOME}/.cloudflared/${TUNNEL_ID}.json}"
 
 # --- Step 4: Create DNS route ---
 echo ""
@@ -144,7 +160,7 @@ echo "[Step 5] Writing config: ${CONFIG_FILE}"
 mkdir -p "${HOME}/.cloudflared"
 cat > "${CONFIG_FILE}" <<EOF
 tunnel: ${TUNNEL_ID}
-credentials-file: ${HOME}/.cloudflared/${TUNNEL_ID}.json
+credentials-file: ${TUNNEL_CRED_FILE}
 
 ingress:
   - hostname: ${HOSTNAME}
@@ -172,12 +188,12 @@ fi
 # --- Step 7: Store the base64 tunnel token for Secret Manager ---
 echo ""
 echo "[Step 7] Storing OpenClaw tunnel token for LaunchAgent installs..."
-CRED_FILE="${HOME}/.cloudflared/${TUNNEL_ID}.json"
+TUNNEL_CRED_FILE="${TUNNEL_CRED_FILE:-${HOME}/.cloudflared/${TUNNEL_ID}.json}"
 TOKEN_FILE="${HOME}/.cloudflared/${TUNNEL_NAME}-token.b64"
-if [ -f "${CRED_FILE}" ]; then
+if [ -f "${TUNNEL_CRED_FILE}" ]; then
   python3 - <<PY > "${TOKEN_FILE}"
 import base64, json, os
-cred_path = os.path.expanduser('${CRED_FILE}')
+cred_path = os.path.expanduser('${TUNNEL_CRED_FILE}')
 with open(cred_path) as f:
     c = json.load(f)
 token = {
