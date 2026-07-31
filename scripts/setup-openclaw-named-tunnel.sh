@@ -64,12 +64,50 @@ echo "  BQ service:     ${SERVICE_NAME}"
 echo ""
 
 # --- Step 1: Check cloudflared login ---
-if [ ! -f "${HOME}/.cloudflared/cert.pem" ]; then
-  echo "[Step 1] No Cloudflare login certificate found."
-  echo "         Run 'cloudflared tunnel login' first, then re-run this script."
+CERT_FILE="${HOME}/.cloudflared/cert.pem"
+HAVE_AUTH=0
+EXISTING_TUNNEL=""
+
+if [ -f "${CERT_FILE}" ]; then
+  HAVE_AUTH=1
+  echo "[Step 1] Cloudflare login certificate found"
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -n "${CLOUDFLARE_API_TOKEN}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+  HAVE_AUTH=1
+  echo "[Step 1] Using CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID for authentication"
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -f "${CONFIG_FILE}" ]; then
+  TUNNEL_ID=$(grep -oE '[0-9a-f-]{36}' "${CONFIG_FILE}" | head -1)
+  if [ -n "${TUNNEL_ID}" ]; then
+    # Prefer the credentials-file path written in the existing config.
+    CONF_CRED_FILE=$(awk '/^credentials-file:/{print $2}' "${CONFIG_FILE}" | head -1)
+    CONF_CRED_FILE="${CONF_CRED_FILE/#\~/${HOME}}"
+    if [ -n "${CONF_CRED_FILE}" ] && [ -f "${CONF_CRED_FILE}" ]; then
+      TUNNEL_CRED_FILE="${CONF_CRED_FILE}"
+      EXISTING_TUNNEL=1
+    elif [ -f "${HOME}/.cloudflared/${TUNNEL_ID}.json" ]; then
+      TUNNEL_CRED_FILE="${HOME}/.cloudflared/${TUNNEL_ID}.json"
+      EXISTING_TUNNEL=1
+    elif [ -f "${HOME}/.cloudflared/${TUNNEL_NAME}.json" ]; then
+      TUNNEL_CRED_FILE="${HOME}/.cloudflared/${TUNNEL_NAME}.json"
+      EXISTING_TUNNEL=1
+    fi
+  fi
+  if [ -n "${EXISTING_TUNNEL}" ]; then
+    echo "[Step 1] No Cloudflare login certificate found, but existing tunnel config found."
+    echo "         Tunnel ID: ${TUNNEL_ID}"
+    echo "         Credentials: ${TUNNEL_CRED_FILE}"
+    echo "         Will reuse the existing tunnel (DNS route must already exist)."
+  fi
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -z "${EXISTING_TUNNEL}" ]; then
+  echo "[Step 1] No Cloudflare login certificate or existing tunnel config found."
+  echo "         Run 'cloudflared tunnel login' first, or set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID."
   exit 1
 fi
-echo "[Step 1] Cloudflare login certificate found"
 
 # --- Step 2: Check OpenClaw is reachable ---
 echo ""
@@ -83,10 +121,12 @@ if ! curl --max-time 3 --connect-timeout 2 -s -o /dev/null "http://localhost:${O
 fi
 echo "  OpenClaw Gateway is healthy"
 
-# --- Step 3: Create the tunnel ---
+# --- Step 3: Create or reuse the tunnel ---
 echo ""
 echo "[Step 3] Creating tunnel '${TUNNEL_NAME}'..."
-if cloudflared tunnel list | grep -q "${TUNNEL_NAME}"; then
+if [ -n "${EXISTING_TUNNEL}" ]; then
+  echo "  Reusing existing tunnel '${TUNNEL_NAME}' (${TUNNEL_ID})"
+elif cloudflared tunnel list | grep -q "${TUNNEL_NAME}"; then
   echo "  Tunnel '${TUNNEL_NAME}' already exists"
   TUNNEL_ID=$(cloudflared tunnel list --output json | python3 -c "
 import json, sys
@@ -105,6 +145,7 @@ else
   echo "  Created tunnel ID: ${TUNNEL_ID}"
 fi
 echo "  Tunnel ID: ${TUNNEL_ID}"
+TUNNEL_CRED_FILE="${TUNNEL_CRED_FILE:-${HOME}/.cloudflared/${TUNNEL_ID}.json}"
 
 # --- Step 4: Create DNS route ---
 echo ""
@@ -119,7 +160,7 @@ echo "[Step 5] Writing config: ${CONFIG_FILE}"
 mkdir -p "${HOME}/.cloudflared"
 cat > "${CONFIG_FILE}" <<EOF
 tunnel: ${TUNNEL_ID}
-credentials-file: ${HOME}/.cloudflared/${TUNNEL_ID}.json
+credentials-file: ${TUNNEL_CRED_FILE}
 
 ingress:
   - hostname: ${HOSTNAME}
@@ -147,12 +188,12 @@ fi
 # --- Step 7: Store the base64 tunnel token for Secret Manager ---
 echo ""
 echo "[Step 7] Storing OpenClaw tunnel token for LaunchAgent installs..."
-CRED_FILE="${HOME}/.cloudflared/${TUNNEL_ID}.json"
+TUNNEL_CRED_FILE="${TUNNEL_CRED_FILE:-${HOME}/.cloudflared/${TUNNEL_ID}.json}"
 TOKEN_FILE="${HOME}/.cloudflared/${TUNNEL_NAME}-token.b64"
-if [ -f "${CRED_FILE}" ]; then
+if [ -f "${TUNNEL_CRED_FILE}" ]; then
   python3 - <<PY > "${TOKEN_FILE}"
 import base64, json, os
-cred_path = os.path.expanduser('${CRED_FILE}')
+cred_path = os.path.expanduser('${TUNNEL_CRED_FILE}')
 with open(cred_path) as f:
     c = json.load(f)
 token = {
