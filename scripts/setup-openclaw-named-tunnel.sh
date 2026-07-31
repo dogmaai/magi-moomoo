@@ -64,12 +64,35 @@ echo "  BQ service:     ${SERVICE_NAME}"
 echo ""
 
 # --- Step 1: Check cloudflared login ---
-if [ ! -f "${HOME}/.cloudflared/cert.pem" ]; then
-  echo "[Step 1] No Cloudflare login certificate found."
-  echo "         Run 'cloudflared tunnel login' first, then re-run this script."
+CERT_FILE="${HOME}/.cloudflared/cert.pem"
+HAVE_AUTH=0
+EXISTING_TUNNEL=""
+
+if [ -f "${CERT_FILE}" ]; then
+  HAVE_AUTH=1
+  echo "[Step 1] Cloudflare login certificate found"
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -n "${CLOUDFLARE_API_TOKEN}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+  HAVE_AUTH=1
+  echo "[Step 1] Using CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID for authentication"
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -f "${CONFIG_FILE}" ]; then
+  TUNNEL_ID=$(grep -oE '[0-9a-f-]{36}' "${CONFIG_FILE}" | head -1)
+  if [ -n "${TUNNEL_ID}" ] && [ -f "${HOME}/.cloudflared/${TUNNEL_ID}.json" ]; then
+    EXISTING_TUNNEL=1
+    echo "[Step 1] No Cloudflare login certificate found, but existing tunnel config found."
+    echo "         Tunnel ID: ${TUNNEL_ID}"
+    echo "         Will reuse the existing tunnel (DNS route must already exist)."
+  fi
+fi
+
+if [ "${HAVE_AUTH}" -eq 0 ] && [ -z "${EXISTING_TUNNEL}" ]; then
+  echo "[Step 1] No Cloudflare login certificate or existing tunnel config found."
+  echo "         Run 'cloudflared tunnel login' first, or set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID."
   exit 1
 fi
-echo "[Step 1] Cloudflare login certificate found"
 
 # --- Step 2: Check OpenClaw is reachable ---
 echo ""
@@ -83,10 +106,12 @@ if ! curl --max-time 3 --connect-timeout 2 -s -o /dev/null "http://localhost:${O
 fi
 echo "  OpenClaw Gateway is healthy"
 
-# --- Step 3: Create the tunnel ---
+# --- Step 3: Create or reuse the tunnel ---
 echo ""
 echo "[Step 3] Creating tunnel '${TUNNEL_NAME}'..."
-if cloudflared tunnel list | grep -q "${TUNNEL_NAME}"; then
+if [ -n "${EXISTING_TUNNEL}" ]; then
+  echo "  Reusing existing tunnel '${TUNNEL_NAME}' (${TUNNEL_ID})"
+elif cloudflared tunnel list | grep -q "${TUNNEL_NAME}"; then
   echo "  Tunnel '${TUNNEL_NAME}' already exists"
   TUNNEL_ID=$(cloudflared tunnel list --output json | python3 -c "
 import json, sys
