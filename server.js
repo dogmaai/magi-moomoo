@@ -83,16 +83,17 @@ async function proxyToBridge(path, options = {}) {
       res = await fetch(url, { ...options, signal: controller.signal });
       const ageHint = getCachedBridgeUrlAgeText();
 
-      // Any server error from the bridge/tunnel is a stale-cache signal.
-      invalidateBridgeUrlCache();
-
-      // Cloudflare returns 5xx for a dead quick-tunnel.  Re-fetch the latest BQ row and retry.
-      if (res.status >= 500 && canRetry && attempt < PROXY_RETRIES) {
-        // Drain the error body before retrying to release the connection.
-        try { await res.text(); } catch { /* ignore */ }
-        console.warn(`[PROXY] Bridge returned HTTP ${res.status} at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
-        baseUrl = await getMoomooBridgeUrl();
-        continue;
+      // Cloudflare returns 5xx for a dead quick-tunnel.  Only invalidate the cache on
+      // server errors, and retry once for idempotent GET requests.
+      if (res.status >= 500) {
+        invalidateBridgeUrlCache();
+        if (canRetry && attempt < PROXY_RETRIES) {
+          // Drain the error body before retrying to release the connection.
+          try { await res.text(); } catch { /* ignore */ }
+          console.warn(`[PROXY] Bridge returned HTTP ${res.status} at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
+          baseUrl = await getMoomooBridgeUrl();
+          continue;
+        }
       }
 
       const contentType = res.headers.get('content-type') || '';
