@@ -64,9 +64,14 @@ function getCachedBridgeUrlAgeText() {
 // moomoo-bridgeへプロキシリクエスト送信 (with timeout + stale URL retry)
 // If the cached tunnel URL is dead (e.g. Cloudflare quick-tunnel rotated),
 // clear the cache, re-fetch the latest opend-proxy URL from BigQuery, and retry once.
+// Retry is only safe for idempotent GET requests; POST /trade/place_order must not
+// be re-sent because the bridge may have already processed the order.
+const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 async function proxyToBridge(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const canRetry = RETRYABLE_METHODS.has(method);
   let baseUrl = await getMoomooBridgeUrl();
-  let lastError = null;
 
   for (let attempt = 0; attempt <= PROXY_RETRIES; attempt++) {
     const url = `${baseUrl}${path}`;
@@ -76,49 +81,20 @@ async function proxyToBridge(path, options = {}) {
 
     try {
       res = await fetch(url, { ...options, signal: controller.signal });
-    } catch (e) {
-      clearTimeout(timeoutId);
       const ageHint = getCachedBridgeUrlAgeText();
+
+      // Any server error from the bridge/tunnel is a stale-cache signal.
       invalidateBridgeUrlCache();
 
-      // Network/DNS/connection errors often mean the cached quick-tunnel URL is stale.
-      // Refresh once from BigQuery and retry.  AbortError is our own timeout, so do not
-      // loop again (avoid doubling the wait for a genuinely slow bridge).
-      if (attempt < PROXY_RETRIES && e.name !== 'AbortError') {
-        console.warn(`[PROXY] Bridge unreachable at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
-        try {
-          baseUrl = await getMoomooBridgeUrl();
-        } catch (bqErr) {
-          lastError = bqErr;
-          break;
-        }
+      // Cloudflare returns 5xx for a dead quick-tunnel.  Re-fetch the latest BQ row and retry.
+      if (res.status >= 500 && canRetry && attempt < PROXY_RETRIES) {
+        // Drain the error body before retrying to release the connection.
+        try { await res.text(); } catch { /* ignore */ }
+        console.warn(`[PROXY] Bridge returned HTTP ${res.status} at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
+        baseUrl = await getMoomooBridgeUrl();
         continue;
       }
 
-      if (e.name === 'AbortError') {
-        throw new Error('moomoo-bridge timeout' + (ageHint ? `; ${ageHint}` : ''));
-      }
-      let message = e.message || e.name || 'unknown bridge error';
-      if (ageHint) message += `; ${ageHint}`;
-      throw new Error(message);
-    }
-
-    clearTimeout(timeoutId);
-    const ageHint = getCachedBridgeUrlAgeText();
-
-    // Cloudflare returns 5xx for a dead quick-tunnel.  Re-fetch the latest BQ row and retry.
-    if (res.status >= 500 && attempt < PROXY_RETRIES) {
-      invalidateBridgeUrlCache();
-      console.warn(`[PROXY] Bridge returned HTTP ${res.status} at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
-      try {
-        baseUrl = await getMoomooBridgeUrl();
-      } catch (bqErr) {
-        throw new Error(`moomoo-bridge unreachable; failed to refresh URL from BigQuery: ${bqErr.message}`);
-      }
-      continue;
-    }
-
-    try {
       const contentType = res.headers.get('content-type') || '';
       let body;
       if (contentType.includes('application/json')) {
@@ -129,9 +105,15 @@ async function proxyToBridge(path, options = {}) {
       }
       return { status: res.status, body };
     } catch (e) {
-      // Unreadable response body.  If it was a 5xx, refresh and retry once.
-      if (res && res.status >= 500 && attempt < PROXY_RETRIES) {
-        invalidateBridgeUrlCache();
+      const ageHint = getCachedBridgeUrlAgeText();
+      invalidateBridgeUrlCache();
+
+      // Network/DNS/connection errors often mean the cached quick-tunnel URL is stale.
+      // Refresh once from BigQuery and retry.  AbortError is our own timeout, so do not
+      // loop again (avoid doubling the wait for a genuinely slow bridge).
+      // POST requests are never retried to avoid duplicate orders.
+      if (canRetry && attempt < PROXY_RETRIES && e.name !== 'AbortError') {
+        console.warn(`[PROXY] Bridge unreachable at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
         try {
           baseUrl = await getMoomooBridgeUrl();
         } catch (bqErr) {
@@ -139,12 +121,18 @@ async function proxyToBridge(path, options = {}) {
         }
         continue;
       }
+
+      if (e.name === 'AbortError') {
+        throw new Error('moomoo-bridge timeout' + (ageHint ? `; ${ageHint}` : ''));
+      }
       const message = e.message || e.name || 'unknown bridge error';
-      throw new Error(message);
+      throw new Error(message + (ageHint ? `; ${ageHint}` : ''));
+    } finally {
+      clearTimeout(timeoutId);
     }
   }
 
-  throw new Error(lastError ? `moomoo-bridge unreachable after retry: ${lastError.message}` : 'moomoo-bridge unreachable after retry');
+  throw new Error('moomoo-bridge unreachable after retry');
 }
 
 // ヘルスチェック
