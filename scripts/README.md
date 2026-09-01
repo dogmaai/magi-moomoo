@@ -233,3 +233,45 @@ The setup/install script:
 
 Use `OPENCLAW_PORT` / `OPENCLAW_HOST_HEADER` env vars to override the local
 OpenClaw Gateway port or Host header.
+
+## Snapshot Freshness Monitoring
+
+`/health` and `/connectivity` only verify that the proxy and bridge are reachable.
+They do **not** prove that actual market snapshot data is being written to BigQuery.
+Use `/snapshot_freshness` for that:
+
+```bash
+# threshold defaults to 900 seconds (15 minutes)
+curl https://magi-moomoo-xxxx.asia-northeast1.run.app/snapshot_freshness
+
+# custom threshold
+curl 'https://magi-moomoo-xxxx.asia-northeast1.run.app/snapshot_freshness?threshold=600'
+```
+
+Response when healthy:
+```json
+{
+  "status": "ok",
+  "freshness_seconds": 42,
+  "latest_snapshot_ts": "2026-09-01T05:00:00.000Z",
+  "threshold_seconds": 900
+}
+```
+
+Returns HTTP 503 when the newest `moomoo_snapshots.snapshot_ts` is older than the
+threshold, or when no rows exist. This is the preferred target for synthetic
+monitoring / alerting because it detects data pipeline stalls such as a single
+unsupported symbol failing the entire batch.
+
+## Partial Snapshot Handling
+
+`/trade/snapshot` (and the bridge `/snapshot`) first tries to fetch all requested
+symbols in one OpenD batch call. If the batch fails — typically because one symbol
+is not available on the requested market (e.g. `HXSCL`, a US OTC name, when the
+bridge is configured for `TrdMarket.US`) — the bridge falls back to a per-symbol
+call, returns HTTP 200 with successful snapshots, and reports the failures in an
+`errors` array.
+
+Before this fallback, one unsupported symbol caused the whole request to fail
+with HTTP 500, which stopped `moomoo_snapshots` ingestion entirely whenever such a
+symbol appeared in the focus list.

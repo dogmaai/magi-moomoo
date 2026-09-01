@@ -346,6 +346,33 @@ def _to_magi_symbol(code: str) -> str:
     return code
 
 
+def _build_snapshot(row) -> dict:
+    """Build a normalized snapshot dict from a MooMoo get_market_snapshot row."""
+    last = _safe_float(row.get("last_price"))
+    prev = _safe_float(row.get("prev_close_price"))
+    bid = _safe_float(row.get("bid_price"))
+    ask = _safe_float(row.get("ask_price"))
+    change = round(last - prev, 4) if last and prev else 0.0
+    change_pct = round((change / prev) * 100, 2) if prev else 0.0
+    spread = round(ask - bid, 4) if ask and bid else 0.0
+    return {
+        "symbol": _to_magi_symbol(str(row.get("code", ""))),
+        "last_price": last,
+        "open": _safe_float(row.get("open_price")),
+        "high": _safe_float(row.get("high_price")),
+        "low": _safe_float(row.get("low_price")),
+        "prev_close": prev,
+        "volume": int(_safe_float(row.get("volume"))),
+        "turnover": _safe_float(row.get("turnover")),
+        "bid": bid,
+        "ask": ask,
+        "spread": spread,
+        "change": change,
+        "change_pct": change_pct,
+        "timestamp": str(row.get("update_time", "")),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -857,6 +884,8 @@ def get_snapshot():
         snapshots  list of {symbol, last_price, open, high, low, prev_close,
                             volume, turnover, bid, ask, spread, change, change_pct,
                             timestamp}
+        errors     list of {symbol, error} for symbols that could not be fetched
+        count      int  number of successful snapshots
     """
     symbols_str = request.args.get("symbols")
     if not symbols_str:
@@ -870,42 +899,50 @@ def get_snapshot():
 
     try:
         quote_ctx = _get_quote_ctx()
-        ret, data = quote_ctx.get_market_snapshot(codes)
-
-        if ret != RET_OK:
-            log.error("[SNAPSHOT] get_market_snapshot failed: %s", data)
-            _reset_quote_ctx()
-            return jsonify({"error": str(data)}), 500
-
         snapshots = []
-        for _, row in data.iterrows():
-            last = _safe_float(row.get("last_price"))
-            prev = _safe_float(row.get("prev_close_price"))
-            bid = _safe_float(row.get("bid_price"))
-            ask = _safe_float(row.get("ask_price"))
-            change = round(last - prev, 4) if last and prev else 0.0
-            change_pct = round((change / prev) * 100, 2) if prev else 0.0
-            spread = round(ask - bid, 4) if ask and bid else 0.0
+        errors = []
 
-            snapshots.append({
-                "symbol": _to_magi_symbol(str(row.get("code", ""))),
-                "last_price": last,
-                "open": _safe_float(row.get("open_price")),
-                "high": _safe_float(row.get("high_price")),
-                "low": _safe_float(row.get("low_price")),
-                "prev_close": prev,
-                "volume": int(_safe_float(row.get("volume"))),
-                "turnover": _safe_float(row.get("turnover")),
-                "bid": bid,
-                "ask": ask,
-                "spread": spread,
-                "change": change,
-                "change_pct": change_pct,
-                "timestamp": str(row.get("update_time", "")),
+        # Fast path: one batch call for the whole universe.
+        ret, data = quote_ctx.get_market_snapshot(codes)
+        if ret == RET_OK and getattr(data, "iterrows", None) and len(data) > 0:
+            for _, row in data.iterrows():
+                snapshots.append(_build_snapshot(row))
+        else:
+            if ret != RET_OK:
+                log.warning("[SNAPSHOT] batch get_market_snapshot failed: %s; falling back to per-symbol", data)
+            else:
+                log.warning("[SNAPSHOT] batch get_market_snapshot returned empty; falling back to per-symbol")
+
+            # Per-symbol fallback: one unsupported symbol (e.g. an OTC name)
+            # should not fail the entire request. Collect successful snapshots
+            # and record errors for the unsupported ones.
+            for code in codes:
+                symbol = _to_magi_symbol(code)
+                try:
+                    sret, sdata = quote_ctx.get_market_snapshot([code])
+                    if sret == RET_OK and getattr(sdata, "iterrows", None) and len(sdata) > 0:
+                        snapshots.append(_build_snapshot(sdata.iloc[0]))
+                    else:
+                        err = str(sdata) if sret != RET_OK else "no data returned"
+                        log.warning("[SNAPSHOT] per-symbol snapshot failed for %s: %s", symbol, err)
+                        errors.append({"symbol": symbol, "error": err})
+                except Exception as se:
+                    log.warning("[SNAPSHOT] per-symbol snapshot exception for %s: %s", symbol, se)
+                    errors.append({"symbol": symbol, "error": str(se)})
+
+        if snapshots:
+            log.info(
+                "[SNAPSHOT] Returned %d snapshots for %d symbols (%d errors)",
+                len(snapshots), len(raw_symbols), len(errors),
+            )
+            return jsonify({
+                "snapshots": snapshots,
+                "count": len(snapshots),
+                "errors": errors,
             })
 
-        log.info("[SNAPSHOT] Returned %d snapshots for %d symbols", len(snapshots), len(raw_symbols))
-        return jsonify({"snapshots": snapshots, "count": len(snapshots)})
+        log.error("[SNAPSHOT] All %d symbols failed", len(codes))
+        return jsonify({"error": "all symbols failed", "errors": errors}), 500
 
     except Exception as e:
         log.exception("[SNAPSHOT] Exception")
