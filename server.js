@@ -304,6 +304,60 @@ app.get('/connectivity', async (req, res) => {
   res.json({ status: 'ok', checks });
 });
 
+// Snapshot freshness check: reads magi_core.moomoo_snapshots latest timestamp.
+// This complements /health and /connectivity by verifying that real market data
+// is actually being persisted, not just that the bridge/proxy are reachable.
+app.get('/snapshot_freshness', async (req, res) => {
+  let thresholdSeconds = 900;
+  if (req.query.threshold !== undefined) {
+    const parsed = Number.parseInt(req.query.threshold, 10);
+    if (Number.isNaN(parsed)) {
+      return res.status(400).json({ status: 'error', error: 'invalid threshold', threshold_seconds: null });
+    }
+    thresholdSeconds = Math.max(1, Math.min(parsed, 86400));
+  }
+  try {
+    const [rows] = await bigquery.query({
+      query: 'SELECT MAX(snapshot_ts) AS latest_ts FROM `screen-share-459802.magi_core.moomoo_snapshots`',
+      location: 'US',
+    });
+    const latest = rows[0]?.latest_ts;
+    if (!latest) {
+      return res.status(503).json({
+        status: 'error',
+        freshness_seconds: null,
+        latest_snapshot_ts: null,
+        threshold_seconds: thresholdSeconds,
+        error: 'No snapshots found in moomoo_snapshots',
+      });
+    }
+    const latestTs = latest instanceof Date ? latest : new Date(latest.value || latest.toString() || latest);
+    const now = Date.now();
+    const latestMs = latestTs.getTime();
+    if (Number.isNaN(latestMs)) {
+      return res.status(500).json({
+        status: 'error',
+        freshness_seconds: null,
+        latest_snapshot_ts: String(latest),
+        threshold_seconds: thresholdSeconds,
+        error: 'Could not parse latest snapshot timestamp',
+      });
+    }
+    const freshnessSeconds = Math.floor((now - latestMs) / 1000);
+    const ok = freshnessSeconds <= thresholdSeconds;
+    const payload = {
+      status: ok ? 'ok' : 'stale',
+      freshness_seconds: freshnessSeconds,
+      latest_snapshot_ts: latestTs.toISOString(),
+      threshold_seconds: thresholdSeconds,
+    };
+    res.status(ok ? 200 : 503).json(payload);
+  } catch (e) {
+    console.error('[FRESHNESS] BigQuery error:', e.message);
+    res.status(500).json({ status: 'error', error: e.message, threshold_seconds: thresholdSeconds });
+  }
+});
+
 // === Legacy Phase 1 Endpoints (kept for backward compatibility) ===
 
 // 残高確認 (Phase 1 - legacy)

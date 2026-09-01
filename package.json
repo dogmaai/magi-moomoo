@@ -4,7 +4,9 @@
   "type": "module",
   "main": "bootstrap.js",
   "scripts": {
-    "start": "node bootstrap.js"
+    "start": "node bootstrap.js",
+    "test": "bash test/run-proxy-cache-tests.sh",
+    "lint": "node --check server.js && python3 -m py_compile bridge/moomoo_bridge.py"
   },
   "dependencies": {
     "@google-cloud/bigquery": "^7.3.0",
