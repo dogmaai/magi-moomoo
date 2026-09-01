@@ -308,7 +308,14 @@ app.get('/connectivity', async (req, res) => {
 // This complements /health and /connectivity by verifying that real market data
 // is actually being persisted, not just that the bridge/proxy are reachable.
 app.get('/snapshot_freshness', async (req, res) => {
-  const thresholdSeconds = Math.max(1, Math.min(parseInt(req.query.threshold || '900', 10), 86400));
+  let thresholdSeconds = 900;
+  if (req.query.threshold !== undefined) {
+    const parsed = Number.parseInt(req.query.threshold, 10);
+    if (Number.isNaN(parsed)) {
+      return res.status(400).json({ status: 'error', error: 'invalid threshold', threshold_seconds: null });
+    }
+    thresholdSeconds = Math.max(1, Math.min(parsed, 86400));
+  }
   try {
     const [rows] = await bigquery.query({
       query: 'SELECT MAX(snapshot_ts) AS latest_ts FROM `screen-share-459802.magi_core.moomoo_snapshots`',

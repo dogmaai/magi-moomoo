@@ -897,38 +897,70 @@ def get_snapshot():
 
     codes = [_to_moomoo_code(s) for s in raw_symbols]
 
+    def _per_symbol_snapshots(quote_ctx, codes_to_try, snapshots, errors):
+        """Fetch snapshots one symbol at a time for any codes the batch could not resolve."""
+        for code in codes_to_try:
+            symbol = _to_magi_symbol(code)
+            try:
+                sret, sdata = quote_ctx.get_market_snapshot([code])
+                if sret == RET_OK and getattr(sdata, "iterrows", None) and len(sdata) > 0:
+                    snapshots.append(_build_snapshot(sdata.iloc[0]))
+                else:
+                    err = str(sdata) if sret != RET_OK else "no data returned"
+                    log.warning("[SNAPSHOT] per-symbol snapshot failed for %s: %s", symbol, err)
+                    errors.append({"symbol": symbol, "error": err})
+            except Exception as se:
+                log.warning("[SNAPSHOT] per-symbol snapshot exception for %s: %s", symbol, se)
+                errors.append({"symbol": symbol, "error": str(se)})
+
     try:
         quote_ctx = _get_quote_ctx()
         snapshots = []
         errors = []
 
-        # Fast path: one batch call for the whole universe.
-        ret, data = quote_ctx.get_market_snapshot(codes)
-        if ret == RET_OK and getattr(data, "iterrows", None) and len(data) > 0:
-            for _, row in data.iterrows():
-                snapshots.append(_build_snapshot(row))
-        else:
-            if ret != RET_OK:
-                log.warning("[SNAPSHOT] batch get_market_snapshot failed: %s; falling back to per-symbol", data)
-            else:
-                log.warning("[SNAPSHOT] batch get_market_snapshot returned empty; falling back to per-symbol")
+        # Fast path: batch call for the whole universe. If the batch fails and
+        # the error names one or more symbols, remove those symbols and retry
+        # the batch. This is much cheaper than a per-symbol fallback and avoids
+        # 400 extra OpenD calls when the context itself is healthy.
+        remaining = codes[:]
+        batch_attempts = 0
+        while remaining and batch_attempts < 10:
+            batch_attempts += 1
+            ret, data = quote_ctx.get_market_snapshot(remaining)
+            if ret == RET_OK and getattr(data, "iterrows", None) and len(data) > 0:
+                for _, row in data.iterrows():
+                    snapshots.append(_build_snapshot(row))
+                break
 
-            # Per-symbol fallback: one unsupported symbol (e.g. an OTC name)
-            # should not fail the entire request. Collect successful snapshots
-            # and record errors for the unsupported ones.
-            for code in codes:
-                symbol = _to_magi_symbol(code)
-                try:
-                    sret, sdata = quote_ctx.get_market_snapshot([code])
-                    if sret == RET_OK and getattr(sdata, "iterrows", None) and len(sdata) > 0:
-                        snapshots.append(_build_snapshot(sdata.iloc[0]))
-                    else:
-                        err = str(sdata) if sret != RET_OK else "no data returned"
-                        log.warning("[SNAPSHOT] per-symbol snapshot failed for %s: %s", symbol, err)
+            if ret != RET_OK:
+                err = str(data)
+                # If the error mentions specific symbols from the current list,
+                # those are unsupported/bad symbols. Strip them and retry.
+                bad_symbols = {c for c in remaining if _to_magi_symbol(c) in err}
+                if bad_symbols:
+                    for c in bad_symbols:
+                        symbol = _to_magi_symbol(c)
+                        log.warning("[SNAPSHOT] batch rejected %s: %s", symbol, err)
                         errors.append({"symbol": symbol, "error": err})
-                except Exception as se:
-                    log.warning("[SNAPSHOT] per-symbol snapshot exception for %s: %s", symbol, se)
-                    errors.append({"symbol": symbol, "error": str(se)})
+                    remaining = [c for c in remaining if c not in bad_symbols]
+                    continue
+
+                # No symbol in the error -> likely connection/session/OpenD
+                # failure. Do not amplify by falling back to per-symbol calls.
+                log.error("[SNAPSHOT] batch get_market_snapshot failed: %s", err)
+                _reset_quote_ctx()
+                return jsonify({"error": err, "errors": errors}), 500
+
+            # ret == RET_OK but empty result; don't keep looping on the same set.
+            log.warning("[SNAPSHOT] batch get_market_snapshot returned empty for %d symbols", len(remaining))
+            break
+
+        # If the batch path left some symbols unresolved (e.g. empty batch result
+        # or all symbols were individually flagged), try them one-by-one as a
+        # last resort. This keeps the request partially successful when only a
+        # few symbols are problematic.
+        if remaining and len(snapshots) == 0:
+            _per_symbol_snapshots(quote_ctx, remaining, snapshots, errors)
 
         if snapshots:
             log.info(
@@ -942,6 +974,7 @@ def get_snapshot():
             })
 
         log.error("[SNAPSHOT] All %d symbols failed", len(codes))
+        _reset_quote_ctx()
         return jsonify({"error": "all symbols failed", "errors": errors}), 500
 
     except Exception as e:
