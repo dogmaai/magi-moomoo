@@ -58,13 +58,15 @@ if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
 fi
 
 # DEPRECATED fallback (see header) — remove once GRAFANA_OTLP_TOKEN is bound everywhere.
+OTLP_TOKEN_SOURCE="GRAFANA_OTLP_TOKEN"
 if [ -z "${GRAFANA_OTLP_TOKEN}" ]; then
   GRAFANA_OTLP_TOKEN="${SIGIL_AUTH_TOKEN:-}"
   if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
     GRAFANA_OTLP_TOKEN="$(gcloud secrets versions access latest --secret=SIGIL_AUTH_TOKEN --project=screen-share-459802 2>/dev/null || true)"
-    if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
-      echo "[otel] Fetched SIGIL_AUTH_TOKEN from Secret Manager (DEPRECATED fallback: sigil:write only — OTLP auth WILL fail; set GRAFANA_OTLP_TOKEN)"
-    fi
+  fi
+  if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
+    OTLP_TOKEN_SOURCE="SIGIL_AUTH_TOKEN"
+    echo "[otel] WARNING: using SIGIL_AUTH_TOKEN for OTLP (DEPRECATED fallback: sigil:write only — OTLP auth WILL fail; set GRAFANA_OTLP_TOKEN)"
   fi
 fi
 
@@ -73,7 +75,11 @@ if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
   OTLP_AUTH="$(printf '%s:%s' "${GRAFANA_INSTANCE_ID}" "${GRAFANA_OTLP_TOKEN}" | base64 | tr -d '\n\r')"
   OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${OTLP_AUTH}"
   export OTEL_EXPORTER_OTLP_HEADERS GRAFANA_INSTANCE_ID
-  echo "[otel] OTLP export enabled: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID})"
+  if [ "${OTLP_TOKEN_SOURCE}" = "GRAFANA_OTLP_TOKEN" ]; then
+    echo "[otel] OTLP export enabled: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID})"
+  else
+    echo "[otel] OTLP export configured with deprecated ${OTLP_TOKEN_SOURCE}: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID}) — expect auth failures"
+  fi
 else
   echo "[otel] GRAFANA_OTLP_TOKEN not set — OTLP export disabled"
 fi
