@@ -31,7 +31,9 @@ OpenTelemetry (OpenLIT)
 OTEL_EXPORTER_OTLP_ENDPOINT  OTLP gateway URL (set by start-bridge.sh)
 OTEL_EXPORTER_OTLP_HEADERS  Authorization header for Grafana Cloud (set by start-bridge.sh)
 GRAFANA_OTLP_TOKEN         Cloud Access Policy token with metrics:write + traces:write
-SIGIL_AUTH_TOKEN           magi-core token reused as GRAFANA_OTLP_TOKEN fallback
+                           (the only sanctioned OTLP credential; truth = GCP Secret Manager)
+SIGIL_AUTH_TOKEN           DEPRECATED fallback in start-bridge.sh (sigil:write only,
+                           OTLP auth fails); scheduled for removal
 """
 
 import os
