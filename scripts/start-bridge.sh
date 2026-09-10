@@ -77,7 +77,10 @@ fi
 if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
   GRAFANA_INSTANCE_ID="${GRAFANA_INSTANCE_ID:-1557976}"
   OTLP_AUTH="$(printf '%s:%s' "${GRAFANA_INSTANCE_ID}" "${GRAFANA_OTLP_TOKEN}" | base64 | tr -d '\n\r')"
-  OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic ${OTLP_AUTH}"
+  # OTLP headers use the W3C Baggage encoding. Encode the space between the
+  # authentication scheme and credentials so the Python exporter retains the
+  # Authorization header.
+  OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20${OTLP_AUTH}"
   export OTEL_EXPORTER_OTLP_HEADERS GRAFANA_INSTANCE_ID
   if [ "${OTLP_TOKEN_SOURCE}" = "GRAFANA_OTLP_TOKEN" ]; then
     echo "[otel] OTLP export enabled: ${OTEL_EXPORTER_OTLP_ENDPOINT} (instance ${GRAFANA_INSTANCE_ID})"
