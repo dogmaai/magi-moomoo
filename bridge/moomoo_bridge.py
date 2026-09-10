@@ -53,6 +53,7 @@ from flask import Flask, request, jsonify
 # OpenTelemetry / Flask instrumentation (lighter than openlit and compatible
 # with moomoo-api's protobuf 3.x pin).
 _OTEL = False
+_OTEL_IMPORT_ERROR = None
 try:
     from opentelemetry import trace
     from opentelemetry.sdk.trace import TracerProvider
@@ -64,8 +65,8 @@ try:
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME, DEPLOYMENT_ENVIRONMENT
     from opentelemetry.instrumentation.flask import FlaskInstrumentor
     _OTEL = True
-except ImportError:
-    pass
+except ImportError as e:
+    _OTEL_IMPORT_ERROR = e
 
 try:
     import pyroscope
@@ -163,6 +164,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 log = logging.getLogger("moomoo-bridge")
+
+if _OTEL_IMPORT_ERROR is not None:
+    log.warning(
+        "[OTEL] OpenTelemetry instrumentation unavailable: %s",
+        _OTEL_IMPORT_ERROR,
+    )
 
 
 class _DualTimezoneLoggingHandler(LoggingHandler):
