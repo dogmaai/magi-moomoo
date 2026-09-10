@@ -30,7 +30,10 @@ TUNNEL_MODE="${1:-cloudflared}"
 # OpenTelemetry OTLP configuration for Grafana Cloud.
 #
 # GRAFANA_OTLP_TOKEN is the ONLY sanctioned credential for OTLP export. It must
-# be a Grafana Cloud Access Policy token with metrics:write + traces:write.
+# be a Grafana Cloud Access Policy token with metrics:write + traces:write +
+# logs:write. Pyroscope uses the separately supplied PYROSCOPE_SERVER_ADDRESS,
+# PYROSCOPE_BASIC_AUTH_USER, and PYROSCOPE_BASIC_AUTH_PASSWORD environment
+# variables; credentials must come from the host's secret mechanism.
 # Source of truth is GCP Secret Manager (screen-share-459802 / GRAFANA_OTLP_TOKEN);
 # an env var copy is accepted first only as a convenience and can go stale.
 #   1. GRAFANA_OTLP_TOKEN env var
@@ -48,7 +51,8 @@ TUNNEL_MODE="${1:-cloudflared}"
 # OTEL_EXPORTER_OTLP_HEADERS from it at runtime.
 OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp}"
 OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
-export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME
+OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}service.namespace=magi,deployment.environment=production"
+export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
 
 if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
   GRAFANA_OTLP_TOKEN="$(gcloud secrets versions access latest --secret=GRAFANA_OTLP_TOKEN --project=screen-share-459802 2>/dev/null || true)"

@@ -31,14 +31,21 @@ OpenTelemetry (OpenLIT)
 OTEL_EXPORTER_OTLP_ENDPOINT  OTLP gateway URL (set by start-bridge.sh)
 OTEL_EXPORTER_OTLP_HEADERS  Authorization header for Grafana Cloud (set by start-bridge.sh)
 GRAFANA_OTLP_TOKEN         Cloud Access Policy token with metrics:write + traces:write
+                           + logs:write
                            (the only sanctioned OTLP credential; truth = GCP Secret Manager)
 SIGIL_AUTH_TOKEN           DEPRECATED fallback in start-bridge.sh (sigil:write only,
                            OTLP auth fails); scheduled for removal
+PYROSCOPE_SERVER_ADDRESS   Pyroscope server URL (profiling disabled when unset)
+PYROSCOPE_BASIC_AUTH_USER  Pyroscope tenant/user ID (optional)
+PYROSCOPE_BASIC_AUTH_PASSWORD
+                           Pyroscope token supplied through env/secret storage (optional)
 """
 
 import os
 import time
 import logging
+import atexit
+import copy
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
@@ -51,11 +58,19 @@ try:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME, DEPLOYMENT_ENVIRONMENT
     from opentelemetry.instrumentation.flask import FlaskInstrumentor
     _OTEL = True
 except ImportError:
     pass
+
+try:
+    import pyroscope
+except ImportError:
+    pyroscope = None
 
 from moomoo import (
     OpenSecTradeContext,
@@ -150,6 +165,23 @@ logging.basicConfig(
 log = logging.getLogger("moomoo-bridge")
 
 
+class _DualTimezoneLoggingHandler(LoggingHandler):
+    """Prepend JST/ET event timestamps to the OTLP copy of each log record."""
+
+    def emit(self, record):
+        event_time = datetime.fromtimestamp(record.created, tz=timezone.utc)
+        jst = event_time.astimezone(ZoneInfo("Asia/Tokyo"))
+        et = event_time.astimezone(ZoneInfo("America/New_York"))
+        dual_timestamp = (
+            f"{jst.isoformat(timespec='seconds')} (JST) / "
+            f"{et.isoformat(timespec='seconds')} (ET)"
+        )
+        otel_record = copy.copy(record)
+        otel_record.msg = f"{dual_timestamp} {record.getMessage()}"
+        otel_record.args = ()
+        super().emit(otel_record)
+
+
 def _safe_float(val, default=0.0):
     """Convert a value to float, returning *default* for 'N/A' or invalid."""
     if val is None or val == "N/A" or val == "":
@@ -168,6 +200,7 @@ if _OTEL:
         _resource = Resource.create(
             {
                 SERVICE_NAME: os.environ.get("OTEL_SERVICE_NAME", "moomoo-bridge"),
+                "service.namespace": "magi",
                 DEPLOYMENT_ENVIRONMENT: os.environ.get("OTEL_DEPLOYMENT_ENVIRONMENT", "production"),
             }
         )
@@ -176,10 +209,51 @@ if _OTEL:
             BatchSpanProcessor(OTLPSpanExporter())
         )
         trace.set_tracer_provider(_provider)
+
+        _logger_provider = LoggerProvider(resource=_resource)
+        _logger_provider.add_log_record_processor(
+            BatchLogRecordProcessor(OTLPLogExporter())
+        )
+        _otel_log_handler = _DualTimezoneLoggingHandler(
+            level=logging.NOTSET,
+            logger_provider=_logger_provider,
+        )
+        log.addHandler(_otel_log_handler)
+        atexit.register(_logger_provider.shutdown)
+
         FlaskInstrumentor().instrument_app(app)
         log.info("[OTEL] OpenTelemetry Flask instrumentation initialized")
     except Exception as e:
         log.warning("[OTEL] OpenTelemetry init failed: %s", e)
+
+# Continuous profiling is opt-in so missing or invalid remote configuration
+# never prevents the trading bridge from starting. Credentials must be supplied
+# through the environment/secret mechanism used by the host.
+if pyroscope is not None and os.environ.get("PYROSCOPE_SERVER_ADDRESS"):
+    try:
+        _pyroscope_config = {
+            "application_name": "moomoo-bridge",
+            "server_address": os.environ["PYROSCOPE_SERVER_ADDRESS"],
+            "tags": {
+                "service.name": "moomoo-bridge",
+                "service.namespace": "magi",
+                "deployment.environment": os.environ.get(
+                    "OTEL_DEPLOYMENT_ENVIRONMENT", "production"
+                ),
+            },
+        }
+        if os.environ.get("PYROSCOPE_BASIC_AUTH_USER"):
+            _pyroscope_config["basic_auth_username"] = os.environ[
+                "PYROSCOPE_BASIC_AUTH_USER"
+            ]
+        if os.environ.get("PYROSCOPE_BASIC_AUTH_PASSWORD"):
+            _pyroscope_config["basic_auth_password"] = os.environ[
+                "PYROSCOPE_BASIC_AUTH_PASSWORD"
+            ]
+        pyroscope.configure(**_pyroscope_config)
+        log.info("[PYROSCOPE] Continuous profiling initialized")
+    except Exception as e:
+        log.warning("[PYROSCOPE] Initialization failed: %s", e)
 
 # ---------------------------------------------------------------------------
 # Context helpers  — lazy-init, reconnect on failure
