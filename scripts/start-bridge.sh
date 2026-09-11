@@ -258,7 +258,7 @@ if [ "${TUNNEL_MODE}" = "--ngrok" ]; then
 
   # Register via ngrok API
   echo "[register] Updating BigQuery service_endpoints..."
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --ngrok
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo --ngrok
 
   TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | "${PYTHON_BIN}" -c "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" 2>/dev/null || echo "unknown")
 
@@ -302,10 +302,10 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
 
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
   echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
-  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
-    echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo "${TUNNEL_URL}"; then
+    echo "[ERROR] Failed to register ${TUNNEL_URL} in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service magi-moomoo ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
@@ -360,10 +360,10 @@ else
 
   # Register tunnel URL in BigQuery
   echo "[register] Updating BigQuery service_endpoints..."
-  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
-    echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo "${TUNNEL_URL}"; then
+    echo "[ERROR] Failed to register ${TUNNEL_URL} in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service magi-moomoo ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
