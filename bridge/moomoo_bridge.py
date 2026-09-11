@@ -42,6 +42,7 @@ PYROSCOPE_BASIC_AUTH_PASSWORD
 """
 
 import os
+import socket
 import time
 import logging
 import atexit
@@ -209,6 +210,15 @@ if _OTEL:
                 SERVICE_NAME: os.environ.get("OTEL_SERVICE_NAME", "moomoo-bridge"),
                 "service.namespace": "magi",
                 DEPLOYMENT_ENVIRONMENT: os.environ.get("OTEL_DEPLOYMENT_ENVIRONMENT", "production"),
+                "service.instance.id": os.environ.get(
+                    "OTEL_SERVICE_INSTANCE_ID",
+                    f"{socket.gethostname()}-{os.getpid()}",
+                ),
+                "host.name": socket.gethostname(),
+                # Grafana Cloud Application Observability / Knowledge Graph expects
+                # otel_service / otel_namespace labels on the metrics side.
+                "otel_service": os.environ.get("OTEL_SERVICE_NAME", "moomoo-bridge"),
+                "otel_namespace": os.environ.get("OTEL_SERVICE_NAMESPACE", "magi"),
             }
         )
         _provider = TracerProvider(resource=_resource)
