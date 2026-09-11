@@ -54,6 +54,14 @@ OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
 OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}service.namespace=magi,deployment.environment=production"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
 
+# Prefer the project venv interpreter (launchd sets VIRTUAL_ENV); fall back to
+# python3 on PATH for manual runs.
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+  PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
+
 if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
   GRAFANA_OTLP_TOKEN="$(gcloud secrets versions access latest --secret=GRAFANA_OTLP_TOKEN --project=screen-share-459802 2>/dev/null || true)"
   if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
@@ -91,6 +99,44 @@ else
   echo "[otel] GRAFANA_OTLP_TOKEN not set — OTLP export disabled"
 fi
 
+# Pyroscope (Grafana Cloud Profiles) configuration.
+# Resolution order per value: environment variable -> GCP Secret Manager ->
+# built-in default (address/user only). PYROSCOPE_BASIC_AUTH_PASSWORD falls
+# back to GRAFANA_OTLP_TOKEN so a single access-policy token can serve both
+# pipelines — that token needs the profiles:write scope for profile data to
+# be accepted.
+if [ -z "${PYROSCOPE_SERVER_ADDRESS}" ] && command -v gcloud >/dev/null 2>&1; then
+  PYROSCOPE_SERVER_ADDRESS="$(gcloud secrets versions access latest --secret=PYROSCOPE_SERVER_ADDRESS --project=screen-share-459802 2>/dev/null || true)"
+  if [ -n "${PYROSCOPE_SERVER_ADDRESS}" ]; then
+    echo "[pyroscope] Fetched PYROSCOPE_SERVER_ADDRESS from Secret Manager"
+  fi
+fi
+PYROSCOPE_SERVER_ADDRESS="${PYROSCOPE_SERVER_ADDRESS:-https://profiles-prod-019.grafana.net}"
+
+if [ -z "${PYROSCOPE_BASIC_AUTH_USER}" ] && command -v gcloud >/dev/null 2>&1; then
+  PYROSCOPE_BASIC_AUTH_USER="$(gcloud secrets versions access latest --secret=PYROSCOPE_BASIC_AUTH_USER --project=screen-share-459802 2>/dev/null || true)"
+  if [ -n "${PYROSCOPE_BASIC_AUTH_USER}" ]; then
+    echo "[pyroscope] Fetched PYROSCOPE_BASIC_AUTH_USER from Secret Manager"
+  fi
+fi
+PYROSCOPE_BASIC_AUTH_USER="${PYROSCOPE_BASIC_AUTH_USER:-${GRAFANA_INSTANCE_ID:-1557976}}"
+
+if [ -z "${PYROSCOPE_BASIC_AUTH_PASSWORD}" ] && command -v gcloud >/dev/null 2>&1; then
+  PYROSCOPE_BASIC_AUTH_PASSWORD="$(gcloud secrets versions access latest --secret=PYROSCOPE_BASIC_AUTH_PASSWORD --project=screen-share-459802 2>/dev/null || true)"
+  if [ -n "${PYROSCOPE_BASIC_AUTH_PASSWORD}" ]; then
+    echo "[pyroscope] Fetched PYROSCOPE_BASIC_AUTH_PASSWORD from Secret Manager"
+  fi
+fi
+PYROSCOPE_BASIC_AUTH_PASSWORD="${PYROSCOPE_BASIC_AUTH_PASSWORD:-${GRAFANA_OTLP_TOKEN:-}}"
+
+export PYROSCOPE_SERVER_ADDRESS PYROSCOPE_BASIC_AUTH_USER
+if [ -n "${PYROSCOPE_BASIC_AUTH_PASSWORD}" ]; then
+  export PYROSCOPE_BASIC_AUTH_PASSWORD
+  echo "[pyroscope] Pyroscope profiling enabled: ${PYROSCOPE_SERVER_ADDRESS} (user ${PYROSCOPE_BASIC_AUTH_USER})"
+else
+  echo "[pyroscope] Pyroscope profiling disabled (no credentials available)"
+fi
+
 # Helper: stop any stale quick cloudflared tunnels targeting this bridge port.
 # Quick tunnels are ephemeral; leftover processes cause duplicate/invalid URLs
 # and can prevent the new tunnel from establishing.
@@ -125,7 +171,7 @@ _wait_for_bridge_health() {
 _kill_stale_bridge() {
   local port=$1
   local pids
-  pids=$(pgrep -f "python3.*moomoo_bridge.py" 2>/dev/null || true)
+  pids=$(pgrep -f "python.*moomoo_bridge.py" 2>/dev/null || true)
   if [ -n "${pids}" ]; then
     echo "[bridge] Killing stale bridge process(es): ${pids}"
     kill -TERM ${pids} 2>/dev/null || true
@@ -176,7 +222,7 @@ if curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/health" >/dev/nu
 else
   echo "[bridge] Starting ${BRIDGE_SCRIPT} on port ${BRIDGE_PORT}..."
   _kill_stale_bridge "${BRIDGE_PORT}"
-  python3 "${BRIDGE_SCRIPT}" &
+  "${PYTHON_BIN}" "${BRIDGE_SCRIPT}" &
   BRIDGE_PID=$!
   if ! _wait_for_bridge_health "${BRIDGE_PORT}" 30; then
     echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT} and OpenD."
@@ -212,9 +258,9 @@ if [ "${TUNNEL_MODE}" = "--ngrok" ]; then
 
   # Register via ngrok API
   echo "[register] Updating BigQuery service_endpoints..."
-  python3 "${SCRIPT_DIR}/register-tunnel.py" --ngrok
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --ngrok
 
-  TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | python3 -c "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" 2>/dev/null || echo "unknown")
+  TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | "${PYTHON_BIN}" -c "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" 2>/dev/null || echo "unknown")
 
 elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
   # ---- Named Tunnel (persistent URL, recommended) ----
@@ -256,10 +302,10 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
 
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
   echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
-  if ! python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
     echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: python3 ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
@@ -314,10 +360,10 @@ else
 
   # Register tunnel URL in BigQuery
   echo "[register] Updating BigQuery service_endpoints..."
-  if ! python3 "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" "${TUNNEL_URL}"; then
     echo "[ERROR] Failed to register ${TUNNEL_URL} as opend-proxy in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: python3 ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
