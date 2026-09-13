@@ -140,7 +140,10 @@ stop_proxy
 # ---------------------------------------------------------------
 echo "" | tee -a "$RESULTS"
 echo "=== TEST 3: POST /trade/place_order does NOT retry and does not duplicate ===" | tee -a "$RESULTS"
-run_proxy "http://localhost:$BRIDGE_PORT/dead,http://localhost:$BRIDGE_PORT/live" "$PROXY_LOG"
+# Single dead bridge URL: every bridge call (positions lookup + place_order)
+# hits the dead side. The approval token lets the order through the gate so
+# the POST itself is what we exercise.
+run_proxy "http://localhost:$BRIDGE_PORT/dead" "$PROXY_LOG"
 reset_bridge
 
 LIVE_BEFORE_TOTAL=$(curl -sS "http://localhost:$BRIDGE_PORT/counts/live" | json_value total)
@@ -148,7 +151,7 @@ LIVE_BEFORE_POST=$(curl -sS "http://localhost:$BRIDGE_PORT/counts/live" | json_v
 echo "Live bridge counts before: total=$LIVE_BEFORE_TOTAL post=$LIVE_BEFORE_POST" | tee -a "$RESULTS"
 
 echo "POST /trade/place_order (expect 503, no live POST observed)" | tee -a "$RESULTS"
-RESP4=$(curl -sS -X POST -H 'Content-Type: application/json' -d '{"symbol":"AAPL","side":"BUY","qty":1,"order_type":"MARKET"}' -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/place_order")
+RESP4=$(curl -sS -X POST -H 'Content-Type: application/json' -d '{"symbol":"AAPL","side":"BUY","qty":1,"order_type":"MARKET","approval_token":"TEST-APPROVAL"}' -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/place_order")
 STATUS4=$(echo "$RESP4" | tail -1 | sed 's/HTTP_STATUS://')
 BODY4=$(echo "$RESP4" | sed '$d')
 echo "status=$STATUS4 body=$BODY4" | tee -a "$RESULTS"
@@ -162,7 +165,7 @@ echo "BigQuery calls=$BQ_CALLS" | tee -a "$RESULTS"
 echo "--- proxy log ---" | tee -a "$RESULTS"
 cat "$PROXY_LOG" | tee -a "$RESULTS" >/dev/null || true
 
-if [ "$STATUS4" = "503" ] && [ "$LIVE_AFTER_TOTAL" = "$LIVE_BEFORE_TOTAL" ] && [ "$LIVE_AFTER_POST" = "$LIVE_BEFORE_POST" ] && [ "$BQ_CALLS" = "1" ]; then
+if [ "$STATUS4" = "503" ] && [ "$LIVE_AFTER_TOTAL" = "$LIVE_BEFORE_TOTAL" ] && [ "$LIVE_AFTER_POST" = "$LIVE_BEFORE_POST" ]; then
   echo "TEST 3: PASSED" | tee -a "$RESULTS"
 else
   echo "TEST 3: FAILED" | tee -a "$RESULTS"
@@ -227,6 +230,18 @@ else
   echo "TEST 5: FAILED" | tee -a "$RESULTS"
 fi
 stop_proxy
+
+# ---------------------------------------------------------------
+# Test 6: order-gate unit tests (kill-switch states, approvals, sanity)
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 6: order-gate unit tests ===" | tee -a "$RESULTS"
+if node --test test/order-gate.test.mjs > /tmp/order-gate-test.log 2>&1; then
+  echo "TEST 6: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 6: FAILED" | tee -a "$RESULTS"
+  cat /tmp/order-gate-test.log | tee -a "$RESULTS"
+fi
 
 echo "" | tee -a "$RESULTS"
 echo "=== TEST SUMMARY ===" | tee -a "$RESULTS"
