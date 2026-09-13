@@ -61,6 +61,7 @@ jobs:
             --min-instances=0 \
             --max-instances=3 \
             --timeout=30s \
+            --update-env-vars=GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }},GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }} \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery
         run: |

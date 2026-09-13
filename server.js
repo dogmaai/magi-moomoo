@@ -1,5 +1,6 @@
 import express from 'express';
 import { BigQuery } from '@google-cloud/bigquery';
+import { OAuth2Client } from 'google-auth-library';
 import fetch from 'node-fetch';
 import { createOrderGate } from './lib/order-gate.mjs';
 
@@ -155,6 +156,55 @@ app.get('/url', async (req, res) => {
 
 // === Phase 2: Trade Proxy Endpoints ===
 
+// === OIDC caller verification (service-to-service auth) ===
+// Cloud Run already enforces IAM (run.invoker) on this service; this layer adds
+// SUBJECT verification — the trusted-pipeline exemption is granted only to a
+// Google-signed ID token whose `email` claim is in GATE_TRUSTED_CALLER_EMAILS.
+// The token Cloud Run validated is forwarded to the container as
+// X-Serverless-Authorization; we re-verify it anyway so nothing here depends on
+// platform header behavior, and fall back to Authorization for direct calls.
+const oidcClient = new OAuth2Client();
+const TRUSTED_CALLER_EMAILS = (process.env.GATE_TRUSTED_CALLER_EMAILS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+if (TRUSTED_CALLER_EMAILS.length) {
+  console.log('[GATE] OIDC subject verification enabled; trusted callers:', TRUSTED_CALLER_EMAILS.join(', '));
+} else {
+  console.warn('[GATE] GATE_TRUSTED_CALLER_EMAILS unset — legacy source-label mode (spoofable)');
+}
+
+let _selfAudience = null;
+let _selfAudienceAt = 0;
+const SELF_AUDIENCE_TTL_MS = 300_000;
+
+// Audience for caller tokens = this service's own URL. Env override first,
+// else the latest 'magi-moomoo' row in service_endpoints (the same URL
+// magi-core mints tokens against).
+async function getSelfAudience() {
+  if (process.env.GATE_OIDC_AUDIENCE) return process.env.GATE_OIDC_AUDIENCE;
+  if (_selfAudience && Date.now() - _selfAudienceAt < SELF_AUDIENCE_TTL_MS) return _selfAudience;
+  const [rows] = await bigquery.query({
+    query: `SELECT url FROM \`screen-share-459802.magi_core.service_endpoints\`
+            WHERE service = 'magi-moomoo'
+            ORDER BY IFNULL(SAFE_CAST(updated_at AS TIMESTAMP), TIMESTAMP('1970-01-01')) DESC
+            LIMIT 1`,
+    location: 'US'
+  });
+  if (!rows.length) throw new Error('magi-moomoo own URL not found in service_endpoints (set GATE_OIDC_AUDIENCE)');
+  _selfAudience = rows[0].url;
+  _selfAudienceAt = Date.now();
+  return _selfAudience;
+}
+
+async function verifyCallerIdToken(idToken) {
+  const ticket = await oidcClient.verifyIdToken({ idToken, audience: await getSelfAudience() });
+  return ticket.getPayload();
+}
+
+function bearerToken(headerValue) {
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(headerValue || '');
+  return m ? m[1] : null;
+}
+
 // 発注 (Phase 2: forward to moomoo-bridge)
 // 発注ゲート — 全呼び出し元共通のサーバーサイド境界（R07/R08）
 // kill switch / reduce-only / 承認トークンをここで強制する
@@ -167,18 +217,22 @@ const orderGate = createOrderGate({
     const result = await proxyToBridge('/positions');
     if (result.status !== 200) throw new Error(`positions bridge returned HTTP ${result.status}`);
     return result.body?.positions || [];
-  }
+  },
+  trustedCallerEmails: TRUSTED_CALLER_EMAILS,
+  verifyIdToken: verifyCallerIdToken
 });
 
 app.post('/trade/place_order', async (req, res) => {
   try {
     const { approval_token: approvalToken, source, ...orderBody } = req.body || {};
+    const idToken = bearerToken(req.get('x-serverless-authorization')) || bearerToken(req.get('authorization'));
     const verdict = await orderGate.checkOrder({
       symbol: orderBody.symbol,
       side: orderBody.side,
       qty: orderBody.qty,
       approvalToken,
-      source
+      source,
+      idToken
     });
     if (!verdict.allow) {
       console.warn(`[GATE] order rejected (${verdict.code}):`, orderBody.symbol, orderBody.side, orderBody.qty, '-', verdict.reason);
