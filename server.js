@@ -1,6 +1,7 @@
 import express from 'express';
 import { BigQuery } from '@google-cloud/bigquery';
 import fetch from 'node-fetch';
+import { createOrderGate } from './lib/order-gate.mjs';
 
 const app = express();
 app.use(express.json());
@@ -155,12 +156,38 @@ app.get('/url', async (req, res) => {
 // === Phase 2: Trade Proxy Endpoints ===
 
 // 発注 (Phase 2: forward to moomoo-bridge)
+// 発注ゲート — 全呼び出し元共通のサーバーサイド境界（R07/R08）
+// kill switch / reduce-only / 承認トークンをここで強制する
+const orderGate = createOrderGate({
+  bqQuery: async (query, params) => {
+    const [rows] = await bigquery.query({ query, params, location: 'US' });
+    return rows;
+  },
+  getPositions: async () => {
+    const result = await proxyToBridge('/positions');
+    if (result.status !== 200) throw new Error(`positions bridge returned HTTP ${result.status}`);
+    return result.body?.positions || [];
+  }
+});
+
 app.post('/trade/place_order', async (req, res) => {
   try {
+    const { approval_token: approvalToken, source, ...orderBody } = req.body || {};
+    const verdict = await orderGate.checkOrder({
+      symbol: orderBody.symbol,
+      side: orderBody.side,
+      qty: orderBody.qty,
+      approvalToken,
+      source
+    });
+    if (!verdict.allow) {
+      console.warn(`[GATE] order rejected (${verdict.code}):`, orderBody.symbol, orderBody.side, orderBody.qty, '-', verdict.reason);
+      return res.status(verdict.status).json({ error: verdict.code, detail: verdict.reason });
+    }
     const result = await proxyToBridge('/place_order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(orderBody),
     });
     res.status(result.status).json(result.body);
   } catch (e) {
