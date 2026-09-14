@@ -1,5 +1,6 @@
 import express from 'express';
 import { BigQuery } from '@google-cloud/bigquery';
+import { OAuth2Client } from 'google-auth-library';
 import fetch from 'node-fetch';
 import { createOrderGate } from './lib/order-gate.mjs';
 
@@ -155,6 +156,85 @@ app.get('/url', async (req, res) => {
 
 // === Phase 2: Trade Proxy Endpoints ===
 
+// === OIDC caller verification (service-to-service auth) ===
+// Cloud Run already enforces IAM (run.invoker) on this service; this layer adds
+// SUBJECT verification — the trusted-pipeline exemption is granted only to a
+// Google-signed ID token whose `email` claim is in GATE_TRUSTED_CALLER_EMAILS.
+// The token Cloud Run validated is forwarded to the container as
+// X-Serverless-Authorization — Google strips its signature, so in-app
+// verifyIdToken() can never succeed on it; for that path we validate the
+// claims (iss/aud/exp/email_verified) and rely on Cloud Run IAM having
+// already authenticated the signature. Authorization tokens from direct
+// callers still carry a signature and are fully re-verified in-app.
+const oidcClient = new OAuth2Client();
+const TRUSTED_CALLER_EMAILS = (process.env.GATE_TRUSTED_CALLER_EMAILS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+if (TRUSTED_CALLER_EMAILS.length) {
+  console.log('[GATE] OIDC subject verification enabled; trusted callers:', TRUSTED_CALLER_EMAILS.join(', '));
+} else {
+  console.warn('[GATE] GATE_TRUSTED_CALLER_EMAILS unset — legacy source-label mode (spoofable)');
+}
+
+let _selfAudience = null;
+let _selfAudienceAt = 0;
+const SELF_AUDIENCE_TTL_MS = 300_000;
+
+// Audience for caller tokens = this service's own URL. Env override first,
+// else the latest 'magi-moomoo' row in service_endpoints (the same URL
+// magi-core mints tokens against).
+async function getSelfAudience() {
+  if (process.env.GATE_OIDC_AUDIENCE) return process.env.GATE_OIDC_AUDIENCE;
+  if (_selfAudience && Date.now() - _selfAudienceAt < SELF_AUDIENCE_TTL_MS) return _selfAudience;
+  const [rows] = await bigquery.query({
+    query: `SELECT url FROM \`screen-share-459802.magi_core.service_endpoints\`
+            WHERE service = 'magi-moomoo'
+            ORDER BY IFNULL(SAFE_CAST(updated_at AS TIMESTAMP), TIMESTAMP('1970-01-01')) DESC
+            LIMIT 1`,
+    location: 'US'
+  });
+  if (!rows.length) throw new Error('magi-moomoo own URL not found in service_endpoints (set GATE_OIDC_AUDIENCE)');
+  _selfAudience = rows[0].url;
+  _selfAudienceAt = Date.now();
+  return _selfAudience;
+}
+
+const GOOGLE_ISSUERS = new Set(['accounts.google.com', 'https://accounts.google.com']);
+
+// Validate claims every path requires beyond identity: right issuer, right
+// audience, unexpired, verified SA email. For the platform path this is the
+// ONLY verification (the signature is gone), so it must stay strict.
+function checkTokenClaims(claims, audience) {
+  if (!claims || !GOOGLE_ISSUERS.has(claims.iss)) throw new Error('unexpected issuer: ' + (claims && claims.iss));
+  if (claims.aud !== audience) throw new Error('unexpected audience');
+  if (!claims.exp || claims.exp * 1000 <= Date.now()) throw new Error('token expired');
+  if (claims.email_verified !== true) throw new Error('email claim not verified');
+  if (!claims.email) throw new Error('no email claim');
+  return claims;
+}
+
+// `platformVerified` — the token arrived via X-Serverless-Authorization, i.e.
+// Cloud Run's IAM proxy already validated its signature and stripped it, so
+// in-app verifyIdToken() can never succeed on it; we validate claims only and
+// rely on the platform boundary (clients cannot inject this header).
+// Otherwise the token came from Authorization and still carries a signature —
+// fully re-verify it in-app.
+async function verifyCallerIdToken(idToken, platformVerified) {
+  const audience = await getSelfAudience();
+  if (platformVerified) {
+    const parts = String(idToken).split('.');
+    if (parts.length !== 3) throw new Error('malformed platform token');
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return checkTokenClaims(claims, audience);
+  }
+  const ticket = await oidcClient.verifyIdToken({ idToken, audience });
+  return checkTokenClaims(ticket.getPayload(), audience);
+}
+
+function bearerToken(headerValue) {
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(headerValue || '');
+  return m ? m[1] : null;
+}
+
 // 発注 (Phase 2: forward to moomoo-bridge)
 // 発注ゲート — 全呼び出し元共通のサーバーサイド境界（R07/R08）
 // kill switch / reduce-only / 承認トークンをここで強制する
@@ -167,18 +247,24 @@ const orderGate = createOrderGate({
     const result = await proxyToBridge('/positions');
     if (result.status !== 200) throw new Error(`positions bridge returned HTTP ${result.status}`);
     return result.body?.positions || [];
-  }
+  },
+  trustedCallerEmails: TRUSTED_CALLER_EMAILS,
+  verifyIdToken: verifyCallerIdToken
 });
 
 app.post('/trade/place_order', async (req, res) => {
   try {
     const { approval_token: approvalToken, source, ...orderBody } = req.body || {};
+    const platformToken = bearerToken(req.get('x-serverless-authorization'));
+    const idToken = platformToken || bearerToken(req.get('authorization'));
     const verdict = await orderGate.checkOrder({
       symbol: orderBody.symbol,
       side: orderBody.side,
       qty: orderBody.qty,
       approvalToken,
-      source
+      source,
+      idToken,
+      idTokenPlatformVerified: Boolean(platformToken)
     });
     if (!verdict.allow) {
       console.warn(`[GATE] order rejected (${verdict.code}):`, orderBody.symbol, orderBody.side, orderBody.qty, '-', verdict.reason);
