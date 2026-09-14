@@ -161,8 +161,11 @@ app.get('/url', async (req, res) => {
 // SUBJECT verification — the trusted-pipeline exemption is granted only to a
 // Google-signed ID token whose `email` claim is in GATE_TRUSTED_CALLER_EMAILS.
 // The token Cloud Run validated is forwarded to the container as
-// X-Serverless-Authorization; we re-verify it anyway so nothing here depends on
-// platform header behavior, and fall back to Authorization for direct calls.
+// X-Serverless-Authorization — Google strips its signature, so in-app
+// verifyIdToken() can never succeed on it; for that path we validate the
+// claims (iss/aud/exp/email_verified) and rely on Cloud Run IAM having
+// already authenticated the signature. Authorization tokens from direct
+// callers still carry a signature and are fully re-verified in-app.
 const oidcClient = new OAuth2Client();
 const TRUSTED_CALLER_EMAILS = (process.env.GATE_TRUSTED_CALLER_EMAILS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
@@ -195,9 +198,36 @@ async function getSelfAudience() {
   return _selfAudience;
 }
 
-async function verifyCallerIdToken(idToken) {
-  const ticket = await oidcClient.verifyIdToken({ idToken, audience: await getSelfAudience() });
-  return ticket.getPayload();
+const GOOGLE_ISSUERS = new Set(['accounts.google.com', 'https://accounts.google.com']);
+
+// Validate claims every path requires beyond identity: right issuer, right
+// audience, unexpired, verified SA email. For the platform path this is the
+// ONLY verification (the signature is gone), so it must stay strict.
+function checkTokenClaims(claims, audience) {
+  if (!claims || !GOOGLE_ISSUERS.has(claims.iss)) throw new Error('unexpected issuer: ' + (claims && claims.iss));
+  if (claims.aud !== audience) throw new Error('unexpected audience');
+  if (!claims.exp || claims.exp * 1000 <= Date.now()) throw new Error('token expired');
+  if (claims.email_verified !== true) throw new Error('email claim not verified');
+  if (!claims.email) throw new Error('no email claim');
+  return claims;
+}
+
+// `platformVerified` — the token arrived via X-Serverless-Authorization, i.e.
+// Cloud Run's IAM proxy already validated its signature and stripped it, so
+// in-app verifyIdToken() can never succeed on it; we validate claims only and
+// rely on the platform boundary (clients cannot inject this header).
+// Otherwise the token came from Authorization and still carries a signature —
+// fully re-verify it in-app.
+async function verifyCallerIdToken(idToken, platformVerified) {
+  const audience = await getSelfAudience();
+  if (platformVerified) {
+    const parts = String(idToken).split('.');
+    if (parts.length !== 3) throw new Error('malformed platform token');
+    const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return checkTokenClaims(claims, audience);
+  }
+  const ticket = await oidcClient.verifyIdToken({ idToken, audience });
+  return checkTokenClaims(ticket.getPayload(), audience);
 }
 
 function bearerToken(headerValue) {
@@ -225,14 +255,16 @@ const orderGate = createOrderGate({
 app.post('/trade/place_order', async (req, res) => {
   try {
     const { approval_token: approvalToken, source, ...orderBody } = req.body || {};
-    const idToken = bearerToken(req.get('x-serverless-authorization')) || bearerToken(req.get('authorization'));
+    const platformToken = bearerToken(req.get('x-serverless-authorization'));
+    const idToken = platformToken || bearerToken(req.get('authorization'));
     const verdict = await orderGate.checkOrder({
       symbol: orderBody.symbol,
       side: orderBody.side,
       qty: orderBody.qty,
       approvalToken,
       source,
-      idToken
+      idToken,
+      idTokenPlatformVerified: Boolean(platformToken)
     });
     if (!verdict.allow) {
       console.warn(`[GATE] order rejected (${verdict.code}):`, orderBody.symbol, orderBody.side, orderBody.qty, '-', verdict.reason);

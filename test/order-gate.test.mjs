@@ -268,6 +268,18 @@ test('OIDC: invalid/missing token is not trusted; valid approval token still aut
   assert.equal(ok.allow, true);
 });
 
+test('OIDC: idTokenPlatformVerified flag is forwarded to the verifier', async () => {
+  const seen = [];
+  const verifyIdToken = async (token, platformVerified) => {
+    seen.push(platformVerified);
+    return { email: TRUSTED_SA };
+  };
+  const { gate } = makeGate({ positions: [], trustedCallerEmails: [TRUSTED_SA], verifyIdToken });
+  await gate.checkOrder(order({ idToken: 'tok', idTokenPlatformVerified: true }));
+  await gate.checkOrder(order({ idToken: 'tok' }));
+  assert.deepEqual(seen, [true, false]);
+});
+
 test('OIDC: trusted caller still blocked by HALTED and by UNKNOWN reduce-only', async () => {
   const deps = {
     trustedCallerEmails: [TRUSTED_SA],
