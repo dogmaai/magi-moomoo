@@ -62,6 +62,19 @@ else
   PYTHON_BIN="python3"
 fi
 
+# Shared bearer token for the public bridge tunnel. Source of truth is
+# MOOMOO_BRIDGE_AUTH_TOKEN in GCP Secret Manager; BRIDGE_AUTH_TOKEN is the
+# runtime env var consumed by bridge/moomoo_bridge.py.
+if [ -z "${BRIDGE_AUTH_TOKEN:-}" ] && command -v gcloud >/dev/null 2>&1; then
+  BRIDGE_AUTH_TOKEN="$(gcloud secrets versions access latest --secret=MOOMOO_BRIDGE_AUTH_TOKEN --project=screen-share-459802 2>/dev/null || true)"
+fi
+if [ -n "${BRIDGE_AUTH_TOKEN:-}" ]; then
+  export BRIDGE_AUTH_TOKEN
+  echo "[auth] Bridge bearer token enabled"
+else
+  echo "[auth] WARNING: BRIDGE_AUTH_TOKEN unset — bridge API is unauthenticated"
+fi
+
 if [ -z "${GRAFANA_OTLP_TOKEN}" ] && command -v gcloud >/dev/null 2>&1; then
   GRAFANA_OTLP_TOKEN="$(gcloud secrets versions access latest --secret=GRAFANA_OTLP_TOKEN --project=screen-share-459802 2>/dev/null || true)"
   if [ -n "${GRAFANA_OTLP_TOKEN}" ]; then
@@ -258,7 +271,7 @@ if [ "${TUNNEL_MODE}" = "--ngrok" ]; then
 
   # Register via ngrok API
   echo "[register] Updating BigQuery service_endpoints..."
-  "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo --ngrok
+  "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service opend-proxy --ngrok
 
   TUNNEL_URL=$(curl -s http://localhost:4040/api/tunnels | "${PYTHON_BIN}" -c "import sys,json; print(json.load(sys.stdin)['tunnels'][0]['public_url'])" 2>/dev/null || echo "unknown")
 
@@ -302,10 +315,10 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
 
   # Register in BigQuery (idempotent — only inserts if URL differs from latest)
   echo "[register] Ensuring BigQuery service_endpoints is up-to-date..."
-  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo "${TUNNEL_URL}"; then
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service opend-proxy "${TUNNEL_URL}"; then
     echo "[ERROR] Failed to register ${TUNNEL_URL} in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service magi-moomoo ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service opend-proxy ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi
@@ -360,10 +373,10 @@ else
 
   # Register tunnel URL in BigQuery
   echo "[register] Updating BigQuery service_endpoints..."
-  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service magi-moomoo "${TUNNEL_URL}"; then
+  if ! "${PYTHON_BIN}" "${SCRIPT_DIR}/register-tunnel.py" --service opend-proxy "${TUNNEL_URL}"; then
     echo "[ERROR] Failed to register ${TUNNEL_URL} in BigQuery."
     echo "        Cloud Run proxy will keep using a stale URL and return 503."
-    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service magi-moomoo ${TUNNEL_URL}"
+    echo "        Fix credentials and re-run: ${PYTHON_BIN} ${SCRIPT_DIR}/register-tunnel.py --service opend-proxy ${TUNNEL_URL}"
     kill -KILL "${CF_PID}" 2>/dev/null || true
     exit 1
   fi

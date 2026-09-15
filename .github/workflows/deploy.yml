@@ -62,6 +62,7 @@ jobs:
             --max-instances=3 \
             --timeout=30s \
             --update-env-vars=GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }},GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }} \
+            --update-secrets=BRIDGE_AUTH_TOKEN=MOOMOO_BRIDGE_AUTH_TOKEN:latest \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery
         run: |

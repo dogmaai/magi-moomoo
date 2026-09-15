@@ -47,6 +47,7 @@ import time
 import logging
 import atexit
 import copy
+import hmac
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
@@ -133,6 +134,12 @@ TRADE_PASSWORD_MD5 = os.environ.get("MOOMOO_TRADE_PASSWORD_MD5") or None
 # avoid selecting the wrong sub-account, e.g. CASH/DERIVATIVES).
 MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
 
+# Optional bearer token for the public tunnel endpoint. When set, every
+# endpoint except /health requires Authorization: Bearer <token>. During the
+# rollout an unset value preserves the legacy unauthenticated behavior.
+BRIDGE_AUTH_TOKEN = os.environ.get("BRIDGE_AUTH_TOKEN", "")
+PUBLIC_BRIDGE_PATHS = {"/health"}
+
 # Target sim_acc_type for auto-discovery (per MooMoo support guidance).
 # US market → STOCK_AND_OPTION, HK market → STOCK
 _TARGET_SIM_TYPE = {
@@ -200,6 +207,28 @@ def _safe_float(val, default=0.0):
         return default
 
 app = Flask(__name__)
+
+
+def _bridge_bearer_token():
+    auth = request.headers.get("Authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token.strip()
+
+
+@app.before_request
+def require_bridge_auth():
+    if request.path in PUBLIC_BRIDGE_PATHS or not BRIDGE_AUTH_TOKEN:
+        return None
+    token = _bridge_bearer_token()
+    if token and hmac.compare_digest(token, BRIDGE_AUTH_TOKEN):
+        return None
+    response = jsonify({"success": False, "error": "unauthorized"})
+    response.status_code = 401
+    response.headers["WWW-Authenticate"] = 'Bearer realm="moomoo-bridge"'
+    return response
+
 
 # OpenTelemetry / Flask instrumentation.
 # Enabled when the packages in bridge/requirements.txt are installed.
@@ -483,6 +512,7 @@ def health():
         "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         "real_orders_enabled": (IS_REAL and ALLOW_REAL_ORDERS),
         "trade_unlocked": _trade_unlocked,
+        "auth_required": bool(BRIDGE_AUTH_TOKEN),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     })
 

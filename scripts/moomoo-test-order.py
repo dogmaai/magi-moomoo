@@ -23,6 +23,11 @@ import sys
 import urllib.request
 
 
+def _bridge_headers():
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test MooMoo paper trading order")
     parser.add_argument("--bridge", type=str, default="http://localhost:11436",
@@ -66,7 +71,7 @@ def main():
         req = urllib.request.Request(
             f"{bridge_url}/place_order",
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_bridge_headers()},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
