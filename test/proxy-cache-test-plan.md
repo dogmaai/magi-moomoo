@@ -86,6 +86,32 @@ The real `server.js` and `bootstrap.js` are run unmodified; only the BigQuery im
 
 **Adversarial signal:** If `clearTimeout` were placed before body reading, the timeout would be disarmed and the proxy would return the slow 200 response after 15s.
 
+### 6. Proxy forwards BRIDGE_AUTH_TOKEN to the bridge
+
+The fake bridge enforces bearer auth on `/live/*` (except `/live/health`) when
+`/tmp/fake-bridge-auth-token` exists, mirroring `bridge/moomoo_bridge.py`.
+
+1. Write a token to `/tmp/fake-bridge-auth-token`.
+2. Start the proxy with `BRIDGE_AUTH_TOKEN=<same>` and `TEST_BQ_URLS=http://localhost:9001/live`.
+3. `GET http://localhost:8080/trade/positions` via the proxy.
+4. `GET http://localhost:9001/live/positions` directly, without a token.
+
+**Pass criteria:**
+- The proxied request returns HTTP 200 (the proxy attached `Authorization: Bearer <token>`).
+- The direct unauthenticated request returns HTTP 401.
+
+**Adversarial signal:** If `bridgeFetchOptions()` failed to attach the header, the proxied request would receive 401 like the direct one.
+
+### 7. Order-gate unit tests
+
+`node --test test/order-gate.test.mjs` covers kill-switch states, approval tokens,
+and OIDC caller verification (see `lib/order-gate.mjs`).
+
+The bridge-side guard itself is covered by `test/bridge_auth_test.py`
+(Flask test client: `/health` stays public, protected endpoints return 401
+without/with a wrong token, a correct token reaches the handler, and legacy
+unauthenticated behavior is preserved when `BRIDGE_AUTH_TOKEN` is unset).
+
 ## Execution command
 
 ```bash

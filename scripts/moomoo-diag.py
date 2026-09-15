@@ -50,6 +50,19 @@ def info(msg):
     print(f"  [INFO] {msg}")
 
 
+def _bridge_request(url):
+    headers = {}
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return urllib.request.Request(url, headers=headers)
+
+
+def _bridge_get_json(url, timeout=10):
+    with urllib.request.urlopen(_bridge_request(url), timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
 # ---------------------------------------------------------------------------
 # Remote diagnostics (via bridge HTTP)
 # ---------------------------------------------------------------------------
@@ -62,11 +75,10 @@ def diagnose_remote(bridge_url):
     # 1. Health check
     section("1. Bridge Health")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/health", timeout=10) as resp:
-            data = json.loads(resp.read())
-            ok(f"Bridge alive: {data.get('service', '?')} @ {data.get('opend', '?')}")
-            info(f"  trd_env={data.get('trd_env')} trd_market={data.get('trd_market')}")
-            info(f"  timestamp={data.get('timestamp')}")
+        data = _bridge_get_json(f"{bridge_url}/health")
+        ok(f"Bridge alive: {data.get('service', '?')} @ {data.get('opend', '?')}")
+        info(f"  trd_env={data.get('trd_env')} trd_market={data.get('trd_market')}")
+        info(f"  timestamp={data.get('timestamp')}")
     except Exception as e:
         fail(f"Bridge unreachable: {e}")
         return
@@ -74,61 +86,57 @@ def diagnose_remote(bridge_url):
     # 2. Accounts
     section("2. SIMULATE Accounts")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/accounts", timeout=10) as resp:
-            data = json.loads(resp.read())
-            accounts = data.get("accounts", [])
-            current = data.get("current_acc_id", 0)
-            info(f"Current acc_id: {current}")
-            for acc in accounts:
-                marker = " <<<" if acc["acc_id"] == current else ""
-                print(f"    acc_id={acc['acc_id']}  type={acc.get('sim_acc_type','?')}  "
-                      f"market={acc.get('trdmarket_auth','?')}{marker}")
-            if not accounts:
-                warn("No SIMULATE accounts found")
+        data = _bridge_get_json(f"{bridge_url}/accounts")
+        accounts = data.get("accounts", [])
+        current = data.get("current_acc_id", 0)
+        info(f"Current acc_id: {current}")
+        for acc in accounts:
+            marker = " <<<" if acc["acc_id"] == current else ""
+            print(f"    acc_id={acc['acc_id']}  type={acc.get('sim_acc_type','?')}  "
+                  f"market={acc.get('trdmarket_auth','?')}{marker}")
+        if not accounts:
+            warn("No SIMULATE accounts found")
     except Exception as e:
         fail(f"Accounts query failed: {e}")
 
     # 3. Account info
     section("3. Account Balance")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/account_info", timeout=10) as resp:
-            data = json.loads(resp.read())
-            info(f"Total Assets:  ${data.get('total_assets', 0):,.2f}")
-            info(f"Cash (USD):    ${data.get('cash', 0):,.2f}")
-            info(f"Market Value:  ${data.get('market_value', 0):,.2f}")
-            info(f"Buying Power:  ${data.get('buying_power', 0):,.2f}")
-            info(f"Unrealized PL: ${data.get('unrealized_pl', 0):,.2f}")
-            info(f"Risk Status:   {data.get('risk_status', 'N/A')}")
+        data = _bridge_get_json(f"{bridge_url}/account_info")
+        info(f"Total Assets:  ${data.get('total_assets', 0):,.2f}")
+        info(f"Cash (USD):    ${data.get('cash', 0):,.2f}")
+        info(f"Market Value:  ${data.get('market_value', 0):,.2f}")
+        info(f"Buying Power:  ${data.get('buying_power', 0):,.2f}")
+        info(f"Unrealized PL: ${data.get('unrealized_pl', 0):,.2f}")
+        info(f"Risk Status:   {data.get('risk_status', 'N/A')}")
     except Exception as e:
         fail(f"Account info query failed: {e}")
 
     # 4. Positions
     section("4. Open Positions")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/positions", timeout=10) as resp:
-            data = json.loads(resp.read())
-            positions = data.get("positions", [])
-            if positions:
-                for p in positions:
-                    print(f"    {p['symbol']:>6}  qty={p['qty']:>6}  "
-                          f"cost=${p.get('avg_cost',0):>10.2f}  "
-                          f"price=${p.get('current_price',0):>10.2f}  "
-                          f"pnl=${p.get('unrealized_pnl',0):>+10.2f}  "
-                          f"mv=${p.get('market_value',0):>10.2f}")
-            else:
-                info("No open positions")
+        data = _bridge_get_json(f"{bridge_url}/positions")
+        positions = data.get("positions", [])
+        if positions:
+            for p in positions:
+                print(f"    {p['symbol']:>6}  qty={p['qty']:>6}  "
+                      f"cost=${p.get('avg_cost',0):>10.2f}  "
+                      f"price=${p.get('current_price',0):>10.2f}  "
+                      f"pnl=${p.get('unrealized_pnl',0):>+10.2f}  "
+                      f"mv=${p.get('market_value',0):>10.2f}")
+        else:
+            info("No open positions")
     except Exception as e:
         fail(f"Positions query failed: {e}")
 
     # 5. Quote test
     section("5. Quote Test (AAPL)")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/quote?symbol=AAPL", timeout=10) as resp:
-            data = json.loads(resp.read())
-            info(f"AAPL last=${data.get('last_price',0):.2f}  "
-                 f"bid=${data.get('bid',0):.2f}  ask=${data.get('ask',0):.2f}  "
-                 f"vol={data.get('volume',0):,}")
-            ok("Quote endpoint working")
+        data = _bridge_get_json(f"{bridge_url}/quote?symbol=AAPL")
+        info(f"AAPL last=${data.get('last_price',0):.2f}  "
+             f"bid=${data.get('bid',0):.2f}  ask=${data.get('ask',0):.2f}  "
+             f"vol={data.get('volume',0):,}")
+        ok("Quote endpoint working")
     except Exception as e:
         warn(f"Quote test failed (may be outside market hours): {e}")
 

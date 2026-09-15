@@ -11,6 +11,18 @@ const bigquery = new BigQuery({ projectId: 'screen-share-459802' });
 
 const PROXY_TIMEOUT_MS = 10000; // 10 second timeout for bridge requests
 const PROXY_RETRIES = 1; // Retry once after refreshing a stale tunnel URL from BigQuery
+const BRIDGE_AUTH_TOKEN = process.env.BRIDGE_AUTH_TOKEN || '';
+if (BRIDGE_AUTH_TOKEN) {
+  console.log('[AUTH] bridge bearer token enabled');
+} else {
+  console.warn('[AUTH] BRIDGE_AUTH_TOKEN unset — bridge requests are unauthenticated');
+}
+
+function bridgeFetchOptions(options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (BRIDGE_AUTH_TOKEN) headers.Authorization = `Bearer ${BRIDGE_AUTH_TOKEN}`;
+  return { ...options, headers };
+}
 
 // moomoo-bridge URL cache (avoid BQ query on every request)
 let cachedBridgeUrl = null;
@@ -82,7 +94,7 @@ async function proxyToBridge(path, options = {}) {
     let res = null;
 
     try {
-      res = await fetch(url, { ...options, signal: controller.signal });
+      res = await fetch(url, { ...bridgeFetchOptions(options), signal: controller.signal });
       const ageHint = getCachedBridgeUrlAgeText();
 
       // Cloudflare returns 5xx for a dead quick-tunnel.  Only invalidate the cache on

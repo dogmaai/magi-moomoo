@@ -1,5 +1,5 @@
 import express from 'express';
-import { createWriteStream } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 
 const app = express();
@@ -7,6 +7,20 @@ app.use(express.json());
 
 const PORT = process.env.FAKE_BRIDGE_PORT || 9001;
 const LOG = process.env.FAKE_BRIDGE_LOG || '/tmp/fake-bridge.log';
+
+// Optional bearer-token enforcement mirroring bridge/moomoo_bridge.py.
+// When TOKEN_FILE contains a token, every /live/* route except /live/health
+// requires Authorization: Bearer <token>. Empty/missing file = legacy mode.
+const TOKEN_FILE = process.env.FAKE_BRIDGE_TOKEN_FILE || '/tmp/fake-bridge-auth-token';
+
+app.use('/live', (req, res, next) => {
+  let expected = '';
+  try { expected = readFileSync(TOKEN_FILE, 'utf8').trim(); } catch { /* no token file */ }
+  if (!expected || req.path === '/health') return next();
+  if ((req.get('authorization') || '') === `Bearer ${expected}`) return next();
+  res.set('WWW-Authenticate', 'Bearer realm="moomoo-bridge"');
+  res.status(401).json({ success: false, error: 'unauthorized' });
+});
 
 const counts = {
   dead: { total: 0, get: 0, post: 0 },

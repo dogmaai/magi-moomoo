@@ -18,14 +18,28 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
 
 
+def _bridge_headers():
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _bridge_request(url, data=None):
+    headers = _bridge_headers()
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(data).encode("utf-8")
+    return urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+
+
 def get_positions(bridge_url):
     """Fetch current positions from the bridge."""
-    with urllib.request.urlopen(f"{bridge_url}/positions", timeout=15) as resp:
+    with urllib.request.urlopen(_bridge_request(f"{bridge_url}/positions"), timeout=15) as resp:
         data = json.loads(resp.read())
         return data.get("positions", [])
 
@@ -40,12 +54,7 @@ def sell_position(bridge_url, symbol, qty):
         "price": 0,
         "remark": "liquidate-all",
     }
-    req = urllib.request.Request(
-        f"{bridge_url}/place_order",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    req = _bridge_request(f"{bridge_url}/place_order", payload)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
@@ -133,7 +142,7 @@ def main():
     # Show updated account info
     print("\nUpdated account:")
     try:
-        with urllib.request.urlopen(f"{bridge_url}/account_info", timeout=10) as resp:
+        with urllib.request.urlopen(_bridge_request(f"{bridge_url}/account_info"), timeout=10) as resp:
             data = json.loads(resp.read())
             print(f"  Total Assets: ${data.get('total_assets', 0):,.2f}")
             print(f"  Cash:         ${data.get('cash', 0):,.2f}")

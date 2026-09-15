@@ -8,6 +8,7 @@ BRIDGE_PORT=9001
 BRIDGE_LOG=/tmp/fake-bridge.log
 PROXY_LOG=/tmp/proxy-test.log
 RESULTS=/tmp/proxy-test-results.txt
+TOKEN_FILE=/tmp/fake-bridge-auth-token
 
 cleanup() {
   set +e
@@ -15,10 +16,11 @@ cleanup() {
   [ -n "${PROXY_PID:-}" ] && kill "$PROXY_PID" 2>/dev/null
   fuser -k "$PROXY_PORT"/tcp 2>/dev/null
   fuser -k "$BRIDGE_PORT"/tcp 2>/dev/null
+  rm -f "$TOKEN_FILE"
 }
 trap cleanup EXIT
 
-rm -f "$BRIDGE_LOG" "$PROXY_LOG" "$RESULTS"
+rm -f "$BRIDGE_LOG" "$PROXY_LOG" "$RESULTS" "$TOKEN_FILE"
 : > "$RESULTS"
 
 echo "=== Starting fake bridge on port $BRIDGE_PORT ===" | tee -a "$RESULTS"
@@ -232,14 +234,41 @@ fi
 stop_proxy
 
 # ---------------------------------------------------------------
-# Test 6: order-gate unit tests (kill-switch states, approvals, sanity)
+# Test 6: proxy forwards BRIDGE_AUTH_TOKEN to the bridge
 # ---------------------------------------------------------------
 echo "" | tee -a "$RESULTS"
-echo "=== TEST 6: order-gate unit tests ===" | tee -a "$RESULTS"
-if node --test test/order-gate.test.mjs > /tmp/order-gate-test.log 2>&1; then
+echo "=== TEST 6: proxy forwards bearer token; unauthenticated bridge call rejected ===" | tee -a "$RESULTS"
+echo "test-token-$$" > "$TOKEN_FILE"
+BRIDGE_AUTH_TOKEN="test-token-$$" run_proxy "http://localhost:$BRIDGE_PORT/live" "$PROXY_LOG"
+reset_bridge
+
+echo "GET /trade/positions via proxy (expect 200 with token)" | tee -a "$RESULTS"
+RESP7=$(curl -sS -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+STATUS7=$(echo "$RESP7" | tail -1 | sed 's/HTTP_STATUS://')
+BODY7=$(echo "$RESP7" | sed '$d')
+echo "status=$STATUS7 body=$BODY7" | tee -a "$RESULTS"
+
+echo "Direct GET /live/positions without token (expect 401)" | tee -a "$RESULTS"
+STATUS8=$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:$BRIDGE_PORT/live/positions")
+echo "status=$STATUS8" | tee -a "$RESULTS"
+
+if [ "$STATUS7" = "200" ] && [ "$STATUS8" = "401" ]; then
   echo "TEST 6: PASSED" | tee -a "$RESULTS"
 else
   echo "TEST 6: FAILED" | tee -a "$RESULTS"
+fi
+stop_proxy
+rm -f "$TOKEN_FILE"
+
+# ---------------------------------------------------------------
+# Test 7: order-gate unit tests (kill-switch states, approvals, sanity)
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 7: order-gate unit tests ===" | tee -a "$RESULTS"
+if node --test test/order-gate.test.mjs > /tmp/order-gate-test.log 2>&1; then
+  echo "TEST 7: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 7: FAILED" | tee -a "$RESULTS"
   cat /tmp/order-gate-test.log | tee -a "$RESULTS"
 fi
 
