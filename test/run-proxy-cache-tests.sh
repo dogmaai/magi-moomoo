@@ -384,7 +384,7 @@ stop_proxy
 
 echo "" | tee -a "$RESULTS"
 echo "=== TEST SUMMARY ===" | tee -a "$RESULTS"
-grep -E 'TEST [0-9]:' "$RESULTS" || true
+grep -E 'TEST [0-9]+:' "$RESULTS" || true
 echo "Results written to $RESULTS"
 echo "Bridge log: $BRIDGE_LOG"
 echo "Last proxy log: $PROXY_LOG"

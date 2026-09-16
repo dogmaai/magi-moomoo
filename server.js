@@ -199,13 +199,15 @@ async function proxyToBridge(path, options = {}) {
       const latencyMs = Date.now() - startedAt;
       const ageHint = route === 'cloudflare' ? getCachedBridgeUrlAgeText() : null;
 
-      // Cloudflare returns 5xx for a dead quick-tunnel; a 5xx on the private
-      // route means the bridge is reachable-but-broken — same "try the other
-      // route once for GETs" handling.  POSTs are never retried on either route.
+      // Cloudflare returns 5xx for a dead quick-tunnel — refresh the cached
+      // URL and retry GETs.  A 5xx on the private route means the bridge is
+      // reachable-but-broken (the route itself is alive — an HTTP response
+      // proved it); failing over to the tunnel would hit the same broken
+      // bridge and flap, so private liveness is left to the /health probes
+      // rather than counted here.  POSTs are never retried on either route.
       if (res.status >= 500) {
         recordRouteMetric(route, latencyMs, false);
-        if (route === 'private') onPrivateRouteFailure(`HTTP ${res.status}`);
-        else invalidateBridgeUrlCache();
+        if (route === 'cloudflare') invalidateBridgeUrlCache();
         if (canRetry && attempt < PROXY_RETRIES) {
           // Drain the error body before retrying to release the connection.
           try { await res.text(); } catch { /* ignore */ }
@@ -559,13 +561,17 @@ app.get('/trade/order_history', async (req, res) => {
 
 // End-to-end connectivity test: proxy → bridge → OpenD
 app.get('/connectivity', async (req, res) => {
-  const checks = { proxy: 'ok', bridge_url: null, bridge_health: null, route_mode: BRIDGE_ROUTE_MODE, timestamp: new Date().toISOString() };
+  const checks = { proxy: 'ok', bridge_url: null, bridge_route: null, bridge_health: null, route_mode: BRIDGE_ROUTE_MODE, timestamp: new Date().toISOString() };
   try {
-    const url = await getMoomooBridgeUrl();
-    checks.bridge_url = url;
+    // Resolve through the route selector so private/auto modes report the URL
+    // that would actually serve traffic — in private mode the BigQuery tunnel
+    // row may not exist post-cutover and must not fail this check.
+    const { route, baseUrl } = await selectBridgeRoute();
+    checks.bridge_url = baseUrl;
+    checks.bridge_route = route;
   } catch (e) {
     checks.bridge_url = 'ERROR: ' + e.message;
-    return res.status(503).json({ status: 'error', checks, error: 'bridge URL not found in BigQuery' });
+    return res.status(503).json({ status: 'error', checks, error: 'bridge URL not resolvable' });
   }
   try {
     const result = await proxyToBridge('/health');
