@@ -7,7 +7,8 @@
 #      as the macOS userspace implementation)
 #   2. Generate a client keypair (if absent) into $WG_DIR
 #   3. Write $WG_DIR/wg0.conf from the env vars below
-#   4. Install ~/Library/LaunchAgents/com.magi.wireguard.plist (RunAtLoad)
+#   4. Install /Library/LaunchDaemons/com.magi.wireguard.plist (RunAtLoad,
+#      runs as root — wg-quick needs privileges for utun/routing)
 #   5. Bring the tunnel up and verify handshake + gateway ping
 #
 # Run on TIALA:
@@ -29,8 +30,8 @@
 #
 # Rollback:
 #   sudo wg-quick down wg0
-#   launchctl unload ~/Library/LaunchAgents/com.magi.wireguard.plist
-#   rm ~/Library/LaunchAgents/com.magi.wireguard.plist
+#   sudo launchctl unload /Library/LaunchDaemons/com.magi.wireguard.plist
+#   sudo rm /Library/LaunchDaemons/com.magi.wireguard.plist
 # (Cloudflare tunnel path is untouched — keep it running until P8.)
 
 set -euo pipefail
@@ -39,11 +40,21 @@ WG_CLIENT_IP="${WG_CLIENT_IP:-10.99.0.2/32}"
 WG_SERVER_IP="${WG_SERVER_IP:-10.99.0.1}"
 WG_PORT_HOST=11436   # bridge listens here (0.0.0.0 — WG interface needs no bind change)
 
+# Ensure brew is in PATH (especially for non-interactive SSH sessions)
+if ! command -v brew >/dev/null 2>&1; then
+  for dir in /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$dir/brew" ]; then
+      export PATH="$dir:$PATH"
+      break
+    fi
+  done
+fi
+
 # brew prefix differs by arch: /opt/homebrew (Apple Silicon) / /usr/local (Intel)
 BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 WG_DIR="${WG_DIR:-${BREW_PREFIX}/etc/wireguard}"
 PLIST_NAME="com.magi.wireguard.plist"
-PLIST_PATH="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
+PLIST_PATH="/Library/LaunchDaemons/${PLIST_NAME}"
 
 if [ -z "${WG_SERVER_ENDPOINT:-}" ] || [ -z "${WG_SERVER_PUBKEY:-}" ]; then
   echo "ERROR: WG_SERVER_ENDPOINT and WG_SERVER_PUBKEY are required." >&2
@@ -53,7 +64,12 @@ if [ -z "${WG_SERVER_ENDPOINT:-}" ] || [ -z "${WG_SERVER_PUBKEY:-}" ]; then
 fi
 
 echo "=== [1/5] Installing wireguard-tools + wireguard-go ==="
-brew install wireguard-tools wireguard-go 2>/dev/null || brew upgrade wireguard-tools wireguard-go
+for formula in wireguard-tools wireguard-go; do
+  if ! brew list "$formula" >/dev/null 2>&1; then
+    echo "Installing $formula..."
+    brew install "$formula"
+  fi
+done
 
 echo "=== [2/5] Generating client keypair (if absent) ==="
 sudo mkdir -p "$WG_DIR"
@@ -82,8 +98,11 @@ EOF
 sudo chmod 600 "$WG_DIR/wg0.conf"
 echo "Config written. Endpoint=${WG_SERVER_ENDPOINT} ClientIP=${WG_CLIENT_IP}"
 
-echo "=== [4/5] Installing launchd agent ${PLIST_NAME} ==="
-cat > "$PLIST_PATH" <<EOF
+echo "=== [4/5] Installing launchd daemon ${PLIST_NAME} ==="
+# wg-quick needs root for utun/routing — a user LaunchAgent cannot do this.
+# LaunchDaemons run with a minimal PATH, so include the brew prefix or wg /
+# wireguard-go will not resolve.
+sudo tee "$PLIST_PATH" >/dev/null <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -96,6 +115,11 @@ cat > "$PLIST_PATH" <<EOF
         <string>up</string>
         <string>wg0</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>${BREW_PREFIX}/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
@@ -105,9 +129,11 @@ cat > "$PLIST_PATH" <<EOF
 </dict>
 </plist>
 EOF
-launchctl unload "$PLIST_PATH" 2>/dev/null || true
-launchctl load "$PLIST_PATH"
-echo "Installed (brings wg0 up at login; the utun interface persists)"
+sudo chown root:wheel "$PLIST_PATH"
+sudo chmod 644 "$PLIST_PATH"
+sudo launchctl unload "$PLIST_PATH" 2>/dev/null || true
+sudo launchctl load "$PLIST_PATH"
+echo "Installed as LaunchDaemon (runs as root at boot; the utun interface persists)"
 
 echo "=== [5/5] Bringing tunnel up + verification ==="
 sudo wg-quick down wg0 2>/dev/null || true
@@ -125,7 +151,7 @@ else
   echo "NOTE: no handshake yet — expected until bridge-gw registers WG_CLIENT_PUBKEY"
 fi
 
-if ping -c2 -t5 "$WG_SERVER_IP" >/dev/null 2>&1; then
+if ping -c2 -W 2500 "$WG_SERVER_IP" >/dev/null 2>&1; then
   echo "OK: ping ${WG_SERVER_IP} (wireguard gateway)"
 else
   echo "NOTE: ping ${WG_SERVER_IP} failed — check server-side [Peer] config + firewall udp:51820"
