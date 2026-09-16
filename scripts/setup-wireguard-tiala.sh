@@ -55,6 +55,7 @@ BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 WG_DIR="${WG_DIR:-${BREW_PREFIX}/etc/wireguard}"
 PLIST_NAME="com.magi.wireguard.plist"
 PLIST_PATH="/Library/LaunchDaemons/${PLIST_NAME}"
+LEGACY_AGENT_PLIST="${HOME}/Library/LaunchAgents/${PLIST_NAME}"
 
 if [ -z "${WG_SERVER_ENDPOINT:-}" ] || [ -z "${WG_SERVER_PUBKEY:-}" ]; then
   echo "ERROR: WG_SERVER_ENDPOINT and WG_SERVER_PUBKEY are required." >&2
@@ -92,13 +93,17 @@ Address = ${WG_CLIENT_IP}
 [Peer]
 PublicKey = ${WG_SERVER_PUBKEY}
 Endpoint = ${WG_SERVER_ENDPOINT}
-AllowedIPs = ${WG_SERVER_IP}/32
+AllowedIPs = ${WG_SERVER_IP%/*}/32
 PersistentKeepalive = 25
 EOF
 sudo chmod 600 "$WG_DIR/wg0.conf"
 echo "Config written. Endpoint=${WG_SERVER_ENDPOINT} ClientIP=${WG_CLIENT_IP}"
 
 echo "=== [4/5] Installing launchd daemon ${PLIST_NAME} ==="
+# Clean up a legacy per-user LaunchAgent install if present — it can never
+# bring the tunnel up (wg-quick needs root) and would just log failures.
+launchctl unload "$LEGACY_AGENT_PLIST" 2>/dev/null || true
+rm -f "$LEGACY_AGENT_PLIST"
 # wg-quick needs root for utun/routing — a user LaunchAgent cannot do this.
 # LaunchDaemons run with a minimal PATH, so include the brew prefix or wg /
 # wireguard-go will not resolve.
@@ -151,10 +156,10 @@ else
   echo "NOTE: no handshake yet — expected until bridge-gw registers WG_CLIENT_PUBKEY"
 fi
 
-if ping -c2 -W 2500 "$WG_SERVER_IP" >/dev/null 2>&1; then
-  echo "OK: ping ${WG_SERVER_IP} (wireguard gateway)"
+if ping -c2 -W 2500 "${WG_SERVER_IP%/*}" >/dev/null 2>&1; then
+  echo "OK: ping ${WG_SERVER_IP%/*} (wireguard gateway)"
 else
-  echo "NOTE: ping ${WG_SERVER_IP} failed — check server-side [Peer] config + firewall udp:51820"
+  echo "NOTE: ping ${WG_SERVER_IP%/*} failed — check server-side [Peer] config + firewall udp:51820"
 fi
 
 echo ""
