@@ -31,6 +31,120 @@ let lastFetchTime = 0;
 const CACHE_TTL_MS = 60_000; // 1 minute
 const STALE_URL_HOURS = 24; // quick-tunnel URLs rarely survive > 24h
 
+// === Dual-route bridge selection (private VPC link / Cloudflare tunnel fallback) ===
+// BRIDGE_ROUTE_MODE: legacy (tunnel only, default), auto (private preferred,
+// Cloudflare fallback with hysteresis), private (private only — post-cutover).
+// BRIDGE_PRIVATE_URL: static private endpoint, e.g. http://10.42.0.10:11436.
+// Health is probed lazily on requests — Cloud Run freezes idle instances, so a
+// setInterval background prober would never fire reliably.
+const BRIDGE_PRIVATE_URL = (process.env.BRIDGE_PRIVATE_URL || '').replace(/\/+$/, '');
+let BRIDGE_ROUTE_MODE = (process.env.BRIDGE_ROUTE_MODE || 'legacy').toLowerCase();
+const BRIDGE_PRIVATE_HEALTH_SEC = Math.max(5, Number(process.env.BRIDGE_PRIVATE_HEALTH_SEC) || 15);
+const PRIVATE_HEALTH_TIMEOUT_MS = 3000;
+const PRIVATE_FAIL_THRESHOLD = 2; // consecutive request failures before marking private down
+const PRIVATE_OK_THRESHOLD = 3;   // consecutive probe successes to mark private recovered
+
+if (!['legacy', 'auto', 'private'].includes(BRIDGE_ROUTE_MODE)) {
+  console.warn(`[ROUTE] unknown BRIDGE_ROUTE_MODE='${BRIDGE_ROUTE_MODE}' — coerced to legacy`);
+  BRIDGE_ROUTE_MODE = 'legacy';
+}
+if (BRIDGE_ROUTE_MODE !== 'legacy' && !BRIDGE_PRIVATE_URL) {
+  console.warn(`[ROUTE] BRIDGE_ROUTE_MODE=${BRIDGE_ROUTE_MODE} but BRIDGE_PRIVATE_URL unset — private route disabled`);
+}
+if (BRIDGE_PRIVATE_URL) {
+  console.log(`[ROUTE] private bridge endpoint configured: ${BRIDGE_PRIVATE_URL} (mode=${BRIDGE_ROUTE_MODE})`);
+}
+
+let privateUp = true; // optimistic: try private first in auto mode
+let privateConsecFail = 0;
+let privateConsecOk = 0;
+let lastPrivateProbe = 0;
+let routeFallbackEvents = 0;
+
+const ROUTE_STATS_LAT_MAX = 256;
+const routeStats = {
+  private:    { requests: 0, errors: 0, latencies: [] },
+  cloudflare: { requests: 0, errors: 0, latencies: [] },
+};
+
+function recordRouteMetric(route, latencyMs, ok) {
+  const s = routeStats[route];
+  if (!s) return;
+  s.requests++;
+  if (!ok) s.errors++;
+  s.latencies.push(latencyMs);
+  if (s.latencies.length > ROUTE_STATS_LAT_MAX) s.latencies.shift();
+}
+
+function onPrivateRouteFailure(reason) {
+  privateConsecFail++;
+  privateConsecOk = 0;
+  if (privateUp && privateConsecFail >= PRIVATE_FAIL_THRESHOLD) {
+    privateUp = false;
+    if (BRIDGE_ROUTE_MODE === 'auto') {
+      routeFallbackEvents++;
+      console.warn(`[ROUTE] private->cloudflare fallback (${reason}; ${privateConsecFail} consecutive failures)`);
+    } else {
+      // 'private' mode has no fallback — a failed private route is degraded,
+      // not switched away from.
+      console.warn(`[ROUTE] private route degraded (${reason}; ${privateConsecFail} consecutive failures)`);
+    }
+  }
+}
+
+function onPrivateRouteSuccess() {
+  privateConsecFail = 0;
+  if (!privateUp) {
+    // A successful request is definitive proof of liveness — restore the flag
+    // so /route_status is accurate in 'private' mode, where no probes run.
+    privateUp = true;
+    console.log('[ROUTE] private route recovered via successful request');
+  }
+}
+
+// Lazy health probe while private is down. Runs on the request path only;
+// consecutive successes re-arm the private route (hysteresis).
+async function maybeProbePrivateRoute() {
+  if (!BRIDGE_PRIVATE_URL) return;
+  if (Date.now() - lastPrivateProbe < BRIDGE_PRIVATE_HEALTH_SEC * 1000) return;
+  lastPrivateProbe = Date.now();
+  let timeoutId;
+  try {
+    const controller = new AbortController();
+    timeoutId = setTimeout(() => controller.abort(), PRIVATE_HEALTH_TIMEOUT_MS);
+    const res = await fetch(`${BRIDGE_PRIVATE_URL}/health`, { ...bridgeFetchOptions(), signal: controller.signal });
+    if (res.ok) {
+      privateConsecOk++;
+      if (!privateUp && privateConsecOk >= PRIVATE_OK_THRESHOLD) {
+        privateUp = true;
+        privateConsecFail = 0;
+        console.log(`[ROUTE] private route recovered (${privateConsecOk} consecutive health probes ok) — resuming private`);
+      }
+    } else {
+      privateConsecOk = 0;
+    }
+  } catch {
+    privateConsecOk = 0;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// Pick the upstream for one proxy request. The choice is made once per request;
+// a request never straddles both routes (orders are never duplicated).
+async function selectBridgeRoute() {
+  if (BRIDGE_ROUTE_MODE === 'private') {
+    if (!BRIDGE_PRIVATE_URL) throw new Error('BRIDGE_ROUTE_MODE=private but BRIDGE_PRIVATE_URL unset');
+    return { route: 'private', baseUrl: BRIDGE_PRIVATE_URL };
+  }
+  if (BRIDGE_ROUTE_MODE === 'auto' && BRIDGE_PRIVATE_URL) {
+    if (!privateUp) await maybeProbePrivateRoute();
+    if (privateUp) return { route: 'private', baseUrl: BRIDGE_PRIVATE_URL };
+    return { route: 'cloudflare', baseUrl: await getMoomooBridgeUrl() };
+  }
+  return { route: 'cloudflare', baseUrl: await getMoomooBridgeUrl() };
+}
+
 // moomoo-bridge URLをBigQueryから取得（with cache）
 async function getMoomooBridgeUrl() {
   if (cachedBridgeUrl && (Date.now() - lastFetchTime < CACHE_TTL_MS)) {
@@ -85,31 +199,22 @@ const RETRYABLE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 async function proxyToBridge(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const canRetry = RETRYABLE_METHODS.has(method);
-  let baseUrl = await getMoomooBridgeUrl();
+  let { route, baseUrl } = await selectBridgeRoute();
 
   for (let attempt = 0; attempt <= PROXY_RETRIES; attempt++) {
     const url = `${baseUrl}${path}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+    const startedAt = Date.now();
     let res = null;
 
     try {
       res = await fetch(url, { ...bridgeFetchOptions(options), signal: controller.signal });
-      const ageHint = getCachedBridgeUrlAgeText();
+      const ageHint = route === 'cloudflare' ? getCachedBridgeUrlAgeText() : null;
 
-      // Cloudflare returns 5xx for a dead quick-tunnel.  Only invalidate the cache on
-      // server errors, and retry once for idempotent GET requests.
-      if (res.status >= 500) {
-        invalidateBridgeUrlCache();
-        if (canRetry && attempt < PROXY_RETRIES) {
-          // Drain the error body before retrying to release the connection.
-          try { await res.text(); } catch { /* ignore */ }
-          console.warn(`[PROXY] Bridge returned HTTP ${res.status} at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
-          baseUrl = await getMoomooBridgeUrl();
-          continue;
-        }
-      }
-
+      // Consume the body before classifying: each attempt is then recorded
+      // exactly once (a body-read/parse throw lands in catch as one error,
+      // not success-then-error), and success latency includes body transfer.
       const contentType = res.headers.get('content-type') || '';
       let body;
       if (contentType.includes('application/json')) {
@@ -118,21 +223,55 @@ async function proxyToBridge(path, options = {}) {
         const text = await res.text();
         try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 500) }; }
       }
+      const latencyMs = Date.now() - startedAt;
+
+      // Cloudflare returns 5xx for a dead quick-tunnel — refresh the cached
+      // URL and retry GETs.  On the private route, only gateway-class
+      // 502/503/504 counts toward liveness (a relayed or misconfigured
+      // upstream surfaces as those); other 5xx prove the route is alive and
+      // fail over to the same broken bridge anyway.  POSTs are never
+      // retried on either route.
+      if (res.status >= 500) {
+        recordRouteMetric(route, latencyMs, false);
+        if (route === 'cloudflare') invalidateBridgeUrlCache();
+        else if (res.status === 502 || res.status === 503 || res.status === 504) {
+          onPrivateRouteFailure(`HTTP ${res.status}`);
+        }
+        if (canRetry && attempt < PROXY_RETRIES) {
+          console.warn(`[PROXY] Bridge returned HTTP ${res.status} via ${route} at ${baseUrl}; re-selecting route and retrying...` + (ageHint ? ` (${ageHint})` : ''));
+          ({ route, baseUrl } = await selectBridgeRoute());
+          continue;
+        }
+      } else {
+        recordRouteMetric(route, latencyMs, true);
+        if (route === 'private') onPrivateRouteSuccess();
+      }
+
       return { status: res.status, body };
     } catch (e) {
-      const ageHint = getCachedBridgeUrlAgeText();
-      invalidateBridgeUrlCache();
+      recordRouteMetric(route, Date.now() - startedAt, false);
+      const ageHint = route === 'cloudflare' ? getCachedBridgeUrlAgeText() : null;
+      // Private liveness only degrades when no HTTP response arrived
+      // (res === null) or our own timeout aborted mid-stream — a response
+      // that came back, even with an unparseable body, proves the route up.
+      if (route === 'private') {
+        if (res === null || e.name === 'AbortError') {
+          onPrivateRouteFailure(e.name === 'AbortError' ? 'timeout' : (e.message || e.name));
+        }
+      } else invalidateBridgeUrlCache();
 
-      // Network/DNS/connection errors often mean the cached quick-tunnel URL is stale.
-      // Refresh once from BigQuery and retry.  AbortError is our own timeout, so do not
+      // Network/DNS/connection errors often mean the cached quick-tunnel URL is
+      // stale or the private link went down.  Re-select the route once (which
+      // refreshes the tunnel URL from BigQuery or falls back off private) for
+      // idempotent GET requests.  AbortError is our own timeout, so do not
       // loop again (avoid doubling the wait for a genuinely slow bridge).
       // POST requests are never retried to avoid duplicate orders.
       if (canRetry && attempt < PROXY_RETRIES && e.name !== 'AbortError') {
-        console.warn(`[PROXY] Bridge unreachable at ${baseUrl}; refreshing URL from BigQuery and retrying...` + (ageHint ? ` (${ageHint})` : ''));
+        console.warn(`[PROXY] Bridge unreachable via ${route} at ${baseUrl}; re-selecting route and retrying...` + (ageHint ? ` (${ageHint})` : ''));
         try {
-          baseUrl = await getMoomooBridgeUrl();
+          ({ route, baseUrl } = await selectBridgeRoute());
         } catch (bqErr) {
-          throw new Error(`moomoo-bridge unreachable; failed to refresh URL from BigQuery: ${bqErr.message}`);
+          throw new Error(`moomoo-bridge unreachable; failed to resolve fallback URL: ${bqErr.message}`);
         }
         continue;
       }
@@ -153,6 +292,42 @@ async function proxyToBridge(path, options = {}) {
 // ヘルスチェック
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'magi-moomoo', timestamp: new Date().toISOString() });
+});
+
+function percentile(sortedAsc, p) {
+  if (!sortedAsc.length) return null;
+  const idx = Math.min(sortedAsc.length - 1, Math.ceil(p * sortedAsc.length) - 1);
+  return sortedAsc[Math.max(0, idx)];
+}
+
+// Route status / metrics: per-route request counts, error counts and latency
+// percentiles so the private-vs-tunnel comparison in the migration plan can be
+// verified empirically before cutover.
+app.get('/route_status', (req, res) => {
+  const summarize = (s) => {
+    const sorted = [...s.latencies].sort((a, b) => a - b);
+    return {
+      requests: s.requests,
+      errors: s.errors,
+      latency_ms: sorted.length ? { p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), samples: sorted.length } : null,
+    };
+  };
+  res.json({
+    mode: BRIDGE_ROUTE_MODE,
+    private_url: BRIDGE_PRIVATE_URL || null,
+    private_health: {
+      up: privateUp,
+      consecutive_failures: privateConsecFail,
+      consecutive_probe_ok: privateConsecOk,
+      last_probe: lastPrivateProbe ? new Date(lastPrivateProbe).toISOString() : null,
+      probe_interval_sec: BRIDGE_PRIVATE_HEALTH_SEC,
+    },
+    active_route: BRIDGE_ROUTE_MODE === 'private' ? 'private'
+      : (BRIDGE_ROUTE_MODE === 'auto' && BRIDGE_PRIVATE_URL && privateUp ? 'private' : 'cloudflare'),
+    fallback_events: routeFallbackEvents,
+    routes: { private: summarize(routeStats.private), cloudflare: summarize(routeStats.cloudflare) },
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // URL確認（デバッグ用）
@@ -411,13 +586,17 @@ app.get('/trade/order_history', async (req, res) => {
 
 // End-to-end connectivity test: proxy → bridge → OpenD
 app.get('/connectivity', async (req, res) => {
-  const checks = { proxy: 'ok', bridge_url: null, bridge_health: null, timestamp: new Date().toISOString() };
+  const checks = { proxy: 'ok', bridge_url: null, bridge_route: null, bridge_health: null, route_mode: BRIDGE_ROUTE_MODE, timestamp: new Date().toISOString() };
   try {
-    const url = await getMoomooBridgeUrl();
-    checks.bridge_url = url;
+    // Resolve through the route selector so private/auto modes report the URL
+    // that would actually serve traffic — in private mode the BigQuery tunnel
+    // row may not exist post-cutover and must not fail this check.
+    const { route, baseUrl } = await selectBridgeRoute();
+    checks.bridge_url = baseUrl;
+    checks.bridge_route = route;
   } catch (e) {
     checks.bridge_url = 'ERROR: ' + e.message;
-    return res.status(503).json({ status: 'error', checks, error: 'bridge URL not found in BigQuery' });
+    return res.status(503).json({ status: 'error', checks, error: 'bridge URL not resolvable' });
   }
   try {
     const result = await proxyToBridge('/health');
@@ -488,10 +667,10 @@ app.get('/snapshot_freshness', async (req, res) => {
 // 残高確認 (Phase 1 - legacy)
 app.get('/account', async (req, res) => {
   try {
-    const url = await getMoomooBridgeUrl();
-    res.json({ 
+    const { baseUrl } = await selectBridgeRoute();
+    res.json({
       message: 'OpenD connected',
-      opend_url: url,
+      opend_url: baseUrl,
       note: 'Use /trade/account_info for Phase 2 API'
     });
   } catch (e) {
@@ -506,11 +685,11 @@ app.post('/order', async (req, res) => {
     return res.status(400).json({ error: 'symbol, side, qty are required' });
   }
   try {
-    const url = await getMoomooBridgeUrl();
+    const { baseUrl } = await selectBridgeRoute();
     res.json({
       status: 'phase1_deprecated',
       message: 'Use POST /trade/place_order for Phase 2.',
-      opend_url: url,
+      opend_url: baseUrl,
       order: { symbol, side, qty }
     });
   } catch (e) {
