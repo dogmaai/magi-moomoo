@@ -52,6 +52,12 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
       - name: Deploy magi-moomoo Cloud Run service
         run: |
+          SECRET_ARGS=()
+          if gcloud secrets describe MOOMOO_BRIDGE_AUTH_TOKEN --project=${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+            SECRET_ARGS+=(--update-secrets=BRIDGE_AUTH_TOKEN=MOOMOO_BRIDGE_AUTH_TOKEN:latest)
+          else
+            echo "::warning::Secret MOOMOO_BRIDGE_AUTH_TOKEN not found — deploying without bridge auth (BRIDGE_AUTH_TOKEN unset)"
+          fi
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image=${{ env.AR_REPO }}/proxy:${{ needs.build.outputs.image_tag }} \
             --region=${{ env.REGION }} \
@@ -62,7 +68,7 @@ jobs:
             --max-instances=3 \
             --timeout=30s \
             --update-env-vars=GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }},GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }} \
-            --update-secrets=BRIDGE_AUTH_TOKEN=MOOMOO_BRIDGE_AUTH_TOKEN:latest \
+            "${SECRET_ARGS[@]}" \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery
         run: |
