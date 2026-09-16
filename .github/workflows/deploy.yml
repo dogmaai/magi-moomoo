@@ -56,6 +56,7 @@ jobs:
           if gcloud secrets describe MOOMOO_BRIDGE_AUTH_TOKEN --project=${{ env.PROJECT_ID }} >/dev/null 2>/tmp/secret-probe-err; then
             SECRET_ARGS+=(--update-secrets=BRIDGE_AUTH_TOKEN=MOOMOO_BRIDGE_AUTH_TOKEN:latest)
           elif grep -q 'NOT_FOUND' /tmp/secret-probe-err; then
+            SECRET_ARGS+=(--remove-secrets=BRIDGE_AUTH_TOKEN)
             echo "::warning::Secret MOOMOO_BRIDGE_AUTH_TOKEN not found — deploying without bridge auth (BRIDGE_AUTH_TOKEN unset)"
           else
             echo "::error::Secret probe for MOOMOO_BRIDGE_AUTH_TOKEN failed (not NOT_FOUND) — refusing to deploy with unknown bridge-auth state:" >&2
