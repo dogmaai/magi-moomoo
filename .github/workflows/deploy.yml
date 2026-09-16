@@ -53,10 +53,14 @@ jobs:
       - name: Deploy magi-moomoo Cloud Run service
         run: |
           SECRET_ARGS=()
-          if gcloud secrets describe MOOMOO_BRIDGE_AUTH_TOKEN --project=${{ env.PROJECT_ID }} >/dev/null 2>&1; then
+          if gcloud secrets describe MOOMOO_BRIDGE_AUTH_TOKEN --project=${{ env.PROJECT_ID }} >/dev/null 2>/tmp/secret-probe-err; then
             SECRET_ARGS+=(--update-secrets=BRIDGE_AUTH_TOKEN=MOOMOO_BRIDGE_AUTH_TOKEN:latest)
-          else
+          elif grep -q 'NOT_FOUND' /tmp/secret-probe-err; then
             echo "::warning::Secret MOOMOO_BRIDGE_AUTH_TOKEN not found — deploying without bridge auth (BRIDGE_AUTH_TOKEN unset)"
+          else
+            echo "::error::Secret probe for MOOMOO_BRIDGE_AUTH_TOKEN failed (not NOT_FOUND) — refusing to deploy with unknown bridge-auth state:" >&2
+            cat /tmp/secret-probe-err >&2
+            exit 1
           fi
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image=${{ env.AR_REPO }}/proxy:${{ needs.build.outputs.image_tag }} \
@@ -67,7 +71,7 @@ jobs:
             --min-instances=0 \
             --max-instances=3 \
             --timeout=30s \
-            --update-env-vars=GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }},GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }} \
+            "--update-env-vars=^;^GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }};GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }}" \
             "${SECRET_ARGS[@]}" \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery
