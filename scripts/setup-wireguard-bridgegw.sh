@@ -21,7 +21,9 @@
 #   5. Restart wg-quick@wg0 so conf rewrites always take effect; verify
 #
 # magi-moomoo then reaches the bridge as http://10.42.0.10:11436 — the DNAT
-# makes the VM's VPC address the fixed private endpoint.
+# makes the VM's VPC address the fixed private endpoint. Requires a VPC
+# ingress firewall rule allowing tcp/${BRIDGE_PORT:-11436} to the VM
+# (separate from the udp:51820 rule used for WireGuard itself).
 #
 # Args/env:
 #   $1 / WG_CLIENT_PUBKEY  TIALA's client public key (positional arg survives

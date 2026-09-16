@@ -20,6 +20,8 @@ Neither side needs the other's key to *start*:
 
 - `bridge-gw` VM exists in `magi-vpc` (10.42.0.10, asia-northeast1-a) with a
   static external IP and `udp:51820` open (`magi-allow-wg` firewall rule).
+- A VPC **ingress** rule allows `tcp:11436` to the VM — this is the relayed
+  bridge port VPC peers will hit; it is separate from the WireGuard rule.
 - Step 1 above done on the VM → Jun provides `WG_SERVER_ENDPOINT`
   (`<bridge-gw external IP>:51820`) and `WG_SERVER_PUBKEY`.
 
