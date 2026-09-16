@@ -124,7 +124,7 @@ BODY3=$(echo "$RESP3" | sed '$d')
 echo "status=$STATUS3 body=$BODY3" | tee -a "$RESULTS"
 
 BQ_CALLS=$(grep -c '\[BQ MOCK\] query' "$PROXY_LOG" || true)
-RETRY_MSG=$(grep -c 'refreshing URL from BigQuery and retrying' "$PROXY_LOG" || true)
+RETRY_MSG=$(grep -c 're-selecting route and retrying' "$PROXY_LOG" || true)
 echo "BigQuery mock calls: $BQ_CALLS, retry log messages: $RETRY_MSG" | tee -a "$RESULTS"
 
 echo "--- proxy log ---" | tee -a "$RESULTS"
@@ -271,6 +271,116 @@ else
   echo "TEST 7: FAILED" | tee -a "$RESULTS"
   cat /tmp/order-gate-test.log | tee -a "$RESULTS"
 fi
+
+# ---------------------------------------------------------------
+# Test 8: legacy mode ignores BRIDGE_PRIVATE_URL (rollback state)
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 8: BRIDGE_ROUTE_MODE=legacy ignores BRIDGE_PRIVATE_URL ===" | tee -a "$RESULTS"
+BRIDGE_PRIVATE_URL="http://localhost:3" BRIDGE_ROUTE_MODE=legacy run_proxy "http://localhost:$BRIDGE_PORT/live" "$PROXY_LOG"
+reset_bridge
+
+echo "GET /trade/positions (expect 200 via cloudflare route)" | tee -a "$RESULTS"
+RESP8=$(curl -sS -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+STATUS8=$(echo "$RESP8" | tail -1 | sed 's/HTTP_STATUS://')
+
+RS8=$(curl -sS "http://localhost:$PROXY_PORT/route_status")
+echo "route_status=$RS8" | tee -a "$RESULTS"
+BQ_CALLS=$(grep -c '\[BQ MOCK\] query' "$PROXY_LOG" || true)
+PRIV_REQS=$(echo "$RS8" | python3 -c "import json,sys; print(json.load(sys.stdin)['routes']['private']['requests'])")
+MODE8=$(echo "$RS8" | python3 -c "import json,sys; print(json.load(sys.stdin)['mode'])")
+
+if [ "$STATUS8" = "200" ] && [ "$BQ_CALLS" = "1" ] && [ "$PRIV_REQS" = "0" ] && [ "$MODE8" = "legacy" ]; then
+  echo "TEST 8: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 8: FAILED (status=$STATUS8 bq=$BQ_CALLS priv_reqs=$PRIV_REQS mode=$MODE8)" | tee -a "$RESULTS"
+fi
+stop_proxy
+
+# ---------------------------------------------------------------
+# Test 9: auto mode serves via private when healthy — BQ never queried
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 9: auto mode uses private route; BigQuery not queried ===" | tee -a "$RESULTS"
+# TEST_BQ_URLS points at a dead URL — proves the private path never touches BQ.
+BRIDGE_PRIVATE_URL="http://localhost:$BRIDGE_PORT/live" BRIDGE_ROUTE_MODE=auto run_proxy "http://localhost:4/dead" "$PROXY_LOG"
+reset_bridge
+
+echo "GET /trade/positions (expect 200 via private)" | tee -a "$RESULTS"
+RESP9=$(curl -sS -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+STATUS9=$(echo "$RESP9" | tail -1 | sed 's/HTTP_STATUS://')
+
+echo "POST /trade/place_order via gate (positions lookup also private)" | tee -a "$RESULTS"
+RESP9B=$(curl -sS -X POST -H 'Content-Type: application/json' -d '{"symbol":"AAPL","side":"BUY","qty":1,"order_type":"MARKET","approval_token":"TEST-APPROVAL"}' -w "\nHTTP_STATUS:%{http_code}" "http://localhost:$PROXY_PORT/trade/place_order")
+STATUS9B=$(echo "$RESP9B" | tail -1 | sed 's/HTTP_STATUS://')
+
+RS9=$(curl -sS "http://localhost:$PROXY_PORT/route_status")
+echo "route_status=$RS9" | tee -a "$RESULTS"
+BQ_CALLS=$(grep -c '\[BQ MOCK\] query' "$PROXY_LOG" || true)
+PRIV_REQS=$(echo "$RS9" | python3 -c "import json,sys; print(json.load(sys.stdin)['routes']['private']['requests'])")
+CF_REQS=$(echo "$RS9" | python3 -c "import json,sys; print(json.load(sys.stdin)['routes']['cloudflare']['requests'])")
+ACTIVE9=$(echo "$RS9" | python3 -c "import json,sys; print(json.load(sys.stdin)['active_route'])")
+LIVE_POST=$(curl -sS "http://localhost:$BRIDGE_PORT/counts/live" | json_value post)
+
+if [ "$STATUS9" = "200" ] && [ "$STATUS9B" = "200" ] && [ "$BQ_CALLS" = "0" ] && [ "$CF_REQS" = "0" ] && [ "$PRIV_REQS" -ge "2" ] && [ "$ACTIVE9" = "private" ] && [ "$LIVE_POST" = "1" ]; then
+  echo "TEST 9: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 9: FAILED (s1=$STATUS9 s2=$STATUS9B bq=$BQ_CALLS cf=$CF_REQS priv=$PRIV_REQS active=$ACTIVE9 live_post=$LIVE_POST)" | tee -a "$RESULTS"
+fi
+stop_proxy
+
+# ---------------------------------------------------------------
+# Test 10: auto mode falls back to cloudflare after private failures
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 10: auto mode falls back to cloudflare when private is down ===" | tee -a "$RESULTS"
+BRIDGE_PRIVATE_URL="http://localhost:3" BRIDGE_ROUTE_MODE=auto run_proxy "http://localhost:$BRIDGE_PORT/live" "$PROXY_LOG"
+reset_bridge
+
+echo "GET /trade/positions #1 (private dead: expect 503, marks route down)" | tee -a "$RESULTS"
+STATUS10A=$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+echo "status=$STATUS10A" | tee -a "$RESULTS"
+
+echo "GET /trade/positions #2 (expect 200 via cloudflare fallback)" | tee -a "$RESULTS"
+STATUS10B=$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+echo "status=$STATUS10B" | tee -a "$RESULTS"
+
+RS10=$(curl -sS "http://localhost:$PROXY_PORT/route_status")
+echo "route_status=$RS10" | tee -a "$RESULTS"
+PRIV_UP10=$(echo "$RS10" | python3 -c "import json,sys; print(json.load(sys.stdin)['private_health']['up'])")
+FB10=$(echo "$RS10" | python3 -c "import json,sys; print(json.load(sys.stdin)['fallback_events'])")
+CF_REQS=$(echo "$RS10" | python3 -c "import json,sys; print(json.load(sys.stdin)['routes']['cloudflare']['requests'])")
+ROUTE_LOG=$(grep -c 'private->cloudflare fallback' "$PROXY_LOG" || true)
+
+if [ "$STATUS10A" = "503" ] && [ "$STATUS10B" = "200" ] && [ "$PRIV_UP10" = "False" ] && [ "$FB10" -ge "1" ] && [ "$CF_REQS" -ge "1" ] && [ "$ROUTE_LOG" -ge "1" ]; then
+  echo "TEST 10: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 10: FAILED (s1=$STATUS10A s2=$STATUS10B up=$PRIV_UP10 fb=$FB10 cf=$CF_REQS log=$ROUTE_LOG)" | tee -a "$RESULTS"
+fi
+stop_proxy
+
+# ---------------------------------------------------------------
+# Test 11: private mode is private-only — no cloudflare, no BQ
+# ---------------------------------------------------------------
+echo "" | tee -a "$RESULTS"
+echo "=== TEST 11: BRIDGE_ROUTE_MODE=private never touches cloudflare/BQ ===" | tee -a "$RESULTS"
+BRIDGE_PRIVATE_URL="http://localhost:$BRIDGE_PORT/live" BRIDGE_ROUTE_MODE=private run_proxy "http://localhost:5/dead" "$PROXY_LOG"
+reset_bridge
+
+STATUS11A=$(curl -sS -o /dev/null -w "%{http_code}" "http://localhost:$PROXY_PORT/trade/positions")
+echo "GET positions via private (expect 200): status=$STATUS11A" | tee -a "$RESULTS"
+
+RS11=$(curl -sS "http://localhost:$PROXY_PORT/route_status")
+BQ_CALLS=$(grep -c '\[BQ MOCK\] query' "$PROXY_LOG" || true)
+CF_REQS=$(echo "$RS11" | python3 -c "import json,sys; print(json.load(sys.stdin)['routes']['cloudflare']['requests'])")
+ACTIVE11=$(echo "$RS11" | python3 -c "import json,sys; print(json.load(sys.stdin)['active_route'])")
+
+if [ "$STATUS11A" = "200" ] && [ "$BQ_CALLS" = "0" ] && [ "$CF_REQS" = "0" ] && [ "$ACTIVE11" = "private" ]; then
+  echo "TEST 11: PASSED" | tee -a "$RESULTS"
+else
+  echo "TEST 11: FAILED (s=$STATUS11A bq=$BQ_CALLS cf=$CF_REQS active=$ACTIVE11)" | tee -a "$RESULTS"
+fi
+stop_proxy
 
 echo "" | tee -a "$RESULTS"
 echo "=== TEST SUMMARY ===" | tee -a "$RESULTS"
