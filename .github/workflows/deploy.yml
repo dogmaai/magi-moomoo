@@ -72,7 +72,10 @@ jobs:
             --min-instances=0 \
             --max-instances=3 \
             --timeout=30s \
-            "--update-env-vars=^;^GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }};GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }}" \
+            --network=magi-vpc \
+            --subnet=magi-subnet-tokyo \
+            --vpc-egress=private-ranges-only \
+            "--update-env-vars=^;^GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }};GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }};BRIDGE_PRIVATE_URL=http://10.42.0.10:11436;BRIDGE_ROUTE_MODE=auto" \
             "${SECRET_ARGS[@]}" \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery
