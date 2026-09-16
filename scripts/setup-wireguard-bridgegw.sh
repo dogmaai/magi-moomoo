@@ -95,12 +95,13 @@ fi
 echo "=== [4/5] IP forwarding + DNAT :${BRIDGE_PORT} -> TIALA ==="
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-magi-forward.conf
-# Dedicated 'magi' table only — 'destroy' replaces our table and never touches
-# pre-existing rules. DNAT is restricted to VPC sources so the external IP
-# cannot be used to reach the bridge API.
+# Dedicated 'magi' table only — never touches pre-existing rules. DNAT is
+# restricted to VPC sources so the external IP cannot be used to reach the
+# bridge API. The file declares the table without flush/destroy verbs
+# ('destroy' needs nftables >= 1.0.9; Debian 12 ships 1.0.6): it is empty at
+# every boot, and the script deletes it before re-applying on re-runs.
 cat > /etc/nftables.conf <<EOF
 #!/usr/sbin/nft -f
-destroy table ip magi
 table ip magi {
     chain prerouting {
         type nat hook prerouting priority dstnat;
@@ -113,6 +114,8 @@ table ip magi {
 }
 EOF
 systemctl enable nftables >/dev/null 2>&1 || true
+# Idempotent live apply: drop our table (if it exists) then load the file.
+nft delete table ip magi 2>/dev/null || true
 nft -f /etc/nftables.conf
 
 echo "=== [5/5] Enable + verify ==="
