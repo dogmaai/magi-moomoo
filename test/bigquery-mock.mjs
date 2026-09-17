@@ -1,4 +1,7 @@
 let callIndex = 0;
+// token -> order_id claim stamped on the ISSUED row by the gate's
+// conditional UPDATE (the consumption mutex)
+const issuedClaims = new Map();
 
 function getUrls() {
   const raw = process.env.TEST_BQ_URLS || 'http://localhost:9001';
@@ -19,8 +22,19 @@ class BigQueryMock {
       return [[{ trading_halted: false, reason: null, updated_by: 'test', updated_at: { value: new Date().toISOString() } }]];
     }
     if (sql.includes('order_approvals')) {
-      if (sql.trimStart().toUpperCase().startsWith('INSERT')) return [[]];
-      if (sql.includes("event = 'USED'")) return [[]];
+      // Atomic consume: BEGIN; UPDATE ISSUED SET order_id=claim WHERE
+      // order_id IS NULL; INSERT USED audit row; COMMIT. Record the claim
+      // so the follow-up ISSUED read-back returns it.
+      if (sql.includes('BEGIN TRANSACTION')) {
+        if (!issuedClaims.has(params.token)) issuedClaims.set(params.token, params.claim);
+        return [[]];
+      }
+      if (sql.includes('SELECT order_id')) {
+        return [issuedClaims.has(params.token) ? [{ order_id: issuedClaims.get(params.token) }] : []];
+      }
+      if (sql.includes("event = 'USED'")) {
+        return [[]];
+      }
       // ISSUED lookup: a valid single-use approval for TEST-APPROVAL (AAPL BUY 1)
       if (params.token === 'TEST-APPROVAL') {
         return [[{
