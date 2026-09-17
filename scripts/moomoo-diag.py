@@ -51,12 +51,22 @@ def info(msg):
     print(f"  [INFO] {msg}")
 
 
+_bridge_token_cache = None
+_bridge_token_resolved = False
+
+
 def _bridge_auth_token():
     """Resolve BRIDGE_AUTH_TOKEN: env first, then GCP Secret Manager — the
     same source start-bridge.sh / moomoo-check-bridge.sh use — so standalone
-    invocations stay authenticated when bridge auth is enabled."""
+    invocations stay authenticated when bridge auth is enabled. The result
+    (including None) is cached so per-request callers do not respawn gcloud."""
+    global _bridge_token_cache, _bridge_token_resolved
+    if _bridge_token_resolved:
+        return _bridge_token_cache
+    _bridge_token_resolved = True
     token = os.environ.get("BRIDGE_AUTH_TOKEN")
     if token:
+        _bridge_token_cache = token
         return token
     try:
         out = subprocess.run(
@@ -66,10 +76,10 @@ def _bridge_auth_token():
             capture_output=True, text=True, timeout=15,
         )
         if out.returncode == 0:
-            return out.stdout.strip() or None
+            _bridge_token_cache = out.stdout.strip() or None
     except Exception:
         pass
-    return None
+    return _bridge_token_cache
 
 
 def _bridge_request(url):
