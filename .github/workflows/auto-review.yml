@@ -1,0 +1,89 @@
+name: Auto Review on PR
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  auto-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const repo = context.repo;
+
+            // 既存レビュー確認
+            const reviews = await github.rest.pulls.listReviews({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number
+            });
+
+            if (reviews.data.some(r => r.body?.includes('自動レビュー'))) {
+              console.log('既に自動レビューが存在します');
+              return;
+            }
+
+            // ファイル取得
+            const files = await github.rest.pulls.listFiles({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number
+            });
+
+            // ファイルタイプ分析
+            const exts = {};
+            files.data.forEach(f => {
+              const ext = f.filename.split('.').pop() || 'none';
+              exts[ext] = (exts[ext] || 0) + 1;
+            });
+
+            // レビューボディ作成
+            let body = `## 自動レビュー
+
+**PR情報:**
+- タイトル: ${pr.title}
+- 作成者: @${pr.user.login}
+- ブランチ: \`${pr.base.ref}\` ← \`${pr.head.ref}\`
+
+**変更統計:**
+- ファイル: ${pr.changed_files}
+- 追加: +${pr.additions}
+- 削除: -${pr.deletions}
+`;
+
+            // タイプ別チェック
+            if (exts.js || exts.ts) body += `\n**JavaScript/TypeScript:**\n- [ ] 型定義\n- [ ] エラーハンドリング\n- [ ] Null/Undefined処理\n`;
+            if (exts.py) body += `\n**Python:**\n- [ ] PEP8準拠\n- [ ] 型ヒント\n- [ ] 例外処理\n`;
+            if (exts.md) body += `\n**Markdown:**\n- [ ] リンクチェック\n- [ ] 書式整合性\n`;
+            if (exts.yml || exts.yaml) body += `\n**YAML:**\n- [ ] インデント\n- [ ] 構文検証\n`;
+
+            body += `\n**共通チェック:**\n- [ ] コード品質\n- [ ] テストカバレッジ\n- [ ] ドキュメント更新\n- [ ] セキュリティ\n- [ ] パフォーマンス\n\n---\n*自動作成。@dogmaai がレビューします。*
+`;
+
+            // レビュー作成
+            await github.rest.pulls.createReview({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number,
+              event: 'COMMENT',
+              body: body
+            });
+
+            // レビュアー割り当て
+            try {
+              await github.rest.pulls.requestReviewers({
+                owner: repo.owner,
+                repo: repo.repo,
+                pull_number: pr.number,
+                reviewers: ['dogmaai']
+              });
+            } catch (e) {
+              console.log(`レビュアー割り当てをスキップ: ${e.message}`);
+            }
