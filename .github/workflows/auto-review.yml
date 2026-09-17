@@ -12,72 +12,97 @@ jobs:
   auto-review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create auto review
+        uses: actions/github-script@v6
         with:
           script: |
             const pr = context.payload.pull_request;
             const repo = context.repo;
 
-            // 既存レビュー確認
-            const reviews = await github.rest.pulls.listReviews({
+            // 既存の自動レビューを確認
+            const existingReviews = await github.rest.pulls.listReviews({
               owner: repo.owner,
               repo: repo.repo,
               pull_number: pr.number
             });
 
-            if (reviews.data.some(r => r.body?.includes('自動レビュー'))) {
-              console.log('既に自動レビューが存在します');
+            // 自動レビューが既に存在する場合はスキップ
+            const autoReviewExists = existingReviews.data.some(
+              review => review.body && review.body.includes('自動レビュー')
+            );
+
+            if (autoReviewExists) {
+              console.log('Auto review already exists, skipping creation...');
               return;
             }
 
-            // ファイル取得
+            // 変更ファイルを取得
             const files = await github.rest.pulls.listFiles({
               owner: repo.owner,
               repo: repo.repo,
-              pull_number: pr.number
+              pull_number: pr.number,
+              per_page: 100
             });
 
-            // ファイルタイプ分析
-            const exts = {};
-            files.data.forEach(f => {
-              const ext = f.filename.split('.').pop() || 'none';
-              exts[ext] = (exts[ext] || 0) + 1;
+            // ファイルタイプを分析
+            const fileExtensions = {};
+            files.data.forEach(file => {
+              const ext = file.filename.split('.').pop() || 'no-extension';
+              fileExtensions[ext] = (fileExtensions[ext] || 0) + 1;
             });
 
-            // レビューボディ作成
-            const bodyLines = [
+            // レビュー内容を構築
+            const reviewLines = [
               '## 自動レビュー',
               '',
               '**PR情報:**',
               `- タイトル: ${pr.title}`,
               `- 作成者: @${pr.user.login}`,
-              `- ブランチ: \`${pr.base.ref}\` ← \`${pr.head.ref}\``,
+              `- ターゲット: \`${pr.base.ref}\` ← \`${pr.head.ref}\``,
+              `- 状態: ${pr.state}`,
               '',
               '**変更統計:**',
-              `- ファイル: ${pr.changed_files}`,
-              `- 追加: +${pr.additions}`,
-              `- 削除: -${pr.deletions}`,
+              `- ファイル数: ${pr.changed_files}`,
+              `- 追加行: +${pr.additions}`,
+              `- 削除行: -${pr.deletions}`,
+              '',
             ];
-            let body = bodyLines.join('\n');
+            let reviewBody = reviewLines.join('\n');
 
-            // タイプ別チェック
-            if (exts.js || exts.ts) body += `\n**JavaScript/TypeScript:**\n- [ ] 型定義\n- [ ] エラーハンドリング\n- [ ] Null/Undefined処理\n`;
-            if (exts.py) body += `\n**Python:**\n- [ ] PEP8準拠\n- [ ] 型ヒント\n- [ ] 例外処理\n`;
-            if (exts.md) body += `\n**Markdown:**\n- [ ] リンクチェック\n- [ ] 書式整合性\n`;
-            if (exts.yml || exts.yaml) body += `\n**YAML:**\n- [ ] インデント\n- [ ] 構文検証\n`;
+            // ファイルタイプ別のチェック項目
+            if (fileExtensions['js'] || fileExtensions['ts']) {
+              reviewBody += `**JavaScript/TypeScript:**\n- [ ] 型定義の確認\n- [ ] 非同期処理のエラーハンドリング\n- [ ] Null/Undefinedの取り扱い\n`;
+            }
 
-            body += `\n**共通チェック:**\n- [ ] コード品質\n- [ ] テストカバレッジ\n- [ ] ドキュメント更新\n- [ ] セキュリティ\n- [ ] パフォーマンス\n\n---\n*自動作成。@dogmaai がレビューします。*\n`;
+            if (fileExtensions['py']) {
+              reviewBody += `**Python:**\n- [ ] PEP 8準拠\n- [ ] 型ヒントの使用\n- [ ] 例外処理の適切性\n`;
+            }
 
-            // レビュー作成
+            if (fileExtensions['md']) {
+              reviewBody += `**Markdown:**\n- [ ] 文書の整合性\n- [ ] リンクの有効性\n- [ ] 書式の適切性\n`;
+            }
+
+            if (fileExtensions['yml'] || fileExtensions['yaml']) {
+              reviewBody += `**YAML:**\n- [ ] インデントの正確性\n- [ ] 必須フィールドの存在\n- [ ] 構文の有効性\n`;
+            }
+
+            reviewBody += `\n**一般的なチェック項目:**\n- [ ] コードの品質\n- [ ] テストカバレッジ\n- [ ] ドキュメントの更新\n- [ ] セキュリティの考慮\n- [ ] パフォーマンスへの影響\n\n---\n\n*このレビューは自動的に作成されました。詳細なレビューを実施します。*\n*レビュアー: @dogmaai が割り当てられています。*\n`;
+
+            // レビューを作成
             await github.rest.pulls.createReview({
               owner: repo.owner,
               repo: repo.repo,
               pull_number: pr.number,
               event: 'COMMENT',
-              body: body
+              body: reviewBody
             });
 
-            // レビュアー割り当て
+            console.log(`Auto review created for ${repo.owner}/${repo.repo}#${pr.number}`);
+
+            // レビュアーを割り当て
             try {
               await github.rest.pulls.requestReviewers({
                 owner: repo.owner,
@@ -85,6 +110,24 @@ jobs:
                 pull_number: pr.number,
                 reviewers: ['dogmaai']
               });
-            } catch (e) {
-              console.log(`レビュアー割り当てをスキップ: ${e.message}`);
+              console.log(`Reviewer assigned: @dogmaai`);
+            } catch (error) {
+              console.log(`Failed to assign reviewer: ${error.message}`);
             }
+
+      - name: Add PR comment for tracking
+        if: success()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const repo = context.repo;
+
+            const commentBody = '🤖 **自動レビューが作成されました**\n\n- レビューID: 自動生成\n- 状態: 確認中\n- 対象: 全ファイル\n- 次のステップ: @dogmaai が詳細レビューを実施します\n\nレビューを確認する\n';
+
+            await github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: pr.number,
+              body: commentBody
+            });
