@@ -45,18 +45,20 @@ jobs:
             });
 
             // レビューボディ作成
-            let body = `## 自動レビュー
-
-**PR情報:**
-- タイトル: ${pr.title}
-- 作成者: @${pr.user.login}
-- ブランチ: \`${pr.base.ref}\` ← \`${pr.head.ref}\`
-
-**変更統計:**
-- ファイル: ${pr.changed_files}
-- 追加: +${pr.additions}
-- 削除: -${pr.deletions}
-`;
+            const bodyLines = [
+              '## 自動レビュー',
+              '',
+              '**PR情報:**',
+              `- タイトル: ${pr.title}`,
+              `- 作成者: @${pr.user.login}`,
+              `- ブランチ: \`${pr.base.ref}\` ← \`${pr.head.ref}\``,
+              '',
+              '**変更統計:**',
+              `- ファイル: ${pr.changed_files}`,
+              `- 追加: +${pr.additions}`,
+              `- 削除: -${pr.deletions}`,
+            ];
+            let body = bodyLines.join('\n');
 
             // タイプ別チェック
             if (exts.js || exts.ts) body += `\n**JavaScript/TypeScript:**\n- [ ] 型定義\n- [ ] エラーハンドリング\n- [ ] Null/Undefined処理\n`;
@@ -64,8 +66,7 @@ jobs:
             if (exts.md) body += `\n**Markdown:**\n- [ ] リンクチェック\n- [ ] 書式整合性\n`;
             if (exts.yml || exts.yaml) body += `\n**YAML:**\n- [ ] インデント\n- [ ] 構文検証\n`;
 
-            body += `\n**共通チェック:**\n- [ ] コード品質\n- [ ] テストカバレッジ\n- [ ] ドキュメント更新\n- [ ] セキュリティ\n- [ ] パフォーマンス\n\n---\n*自動作成。@dogmaai がレビューします。*
-`;
+            body += `\n**共通チェック:**\n- [ ] コード品質\n- [ ] テストカバレッジ\n- [ ] ドキュメント更新\n- [ ] セキュリティ\n- [ ] パフォーマンス\n\n---\n*自動作成。@dogmaai がレビューします。*\n`;
 
             // レビュー作成
             await github.rest.pulls.createReview({
