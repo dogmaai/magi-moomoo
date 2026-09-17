@@ -240,6 +240,24 @@ if BRIDGE_HEALTH=$(curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/
   if [ -n "${BRIDGE_AUTH_TOKEN:-}" ] && [ "${RUNNING_AUTH}" != "True" ]; then
     echo "[bridge] Running bridge reports auth_required=${RUNNING_AUTH} but a token is configured — restarting to enable auth"
     _kill_stale_bridge "${BRIDGE_PORT}"
+  elif [ -n "${BRIDGE_AUTH_TOKEN:-}" ] && [ "${RUNNING_AUTH}" = "True" ]; then
+    # auth_required alone cannot detect token rotation — a bridge started
+    # with an older token still reports true. Probe a protected endpoint
+    # with the resolved token: /quote without params returns 400 when auth
+    # passes, 401 only when the running process holds a different token.
+    PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+      -H "Authorization: Bearer ${BRIDGE_AUTH_TOKEN}" \
+      "http://localhost:${BRIDGE_PORT}/quote" 2>/dev/null || echo "000")
+    if [ "${PROBE_CODE}" = "401" ]; then
+      echo "[bridge] Running bridge rejected the resolved BRIDGE_AUTH_TOKEN (401) — token was rotated; restarting to pick up the new token"
+      _kill_stale_bridge "${BRIDGE_PORT}"
+    elif [ "${PROBE_CODE}" = "000" ]; then
+      echo "[bridge] WARNING: token probe could not connect (health just passed — transient?) — reusing running bridge"
+      BRIDGE_NEEDS_START=false
+    else
+      echo "[bridge] Already running, healthy, and accepts the resolved token (probe HTTP ${PROBE_CODE})"
+      BRIDGE_NEEDS_START=false
+    fi
   elif [ -z "${BRIDGE_AUTH_TOKEN:-}" ] && [ "${RUNNING_AUTH}" = "True" ]; then
     echo "[bridge] WARNING: running bridge requires auth but BRIDGE_AUTH_TOKEN is unset — bridge calls will return 401"
     BRIDGE_NEEDS_START=false
