@@ -131,3 +131,74 @@ jobs:
               issue_number: pr.number,
               body: commentBody
             });
+
+      - name: Mistral code review
+        if: success()
+        continue-on-error: true
+        env:
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MISTRAL_MODEL: mistral-large-latest
+        uses: actions/github-script@v6
+        with:
+          script: |
+            if (!process.env.MISTRAL_API_KEY) {
+              console.log('MISTRAL_API_KEY not set, skipping Mistral review');
+              return;
+            }
+            const pr = context.payload.pull_request;
+            const repo = context.repo;
+
+            // 同一 head SHA への重複レビュー防止
+            const marker = `<!-- mistral-review sha=${pr.head.sha} -->`;
+            const existing = await github.rest.pulls.listReviews({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number,
+              per_page: 100
+            });
+            if (existing.data.some(r => r.body && r.body.includes(marker))) {
+              console.log('Mistral review already exists for this head SHA');
+              return;
+            }
+
+            // diff 取得（大きすぎる場合は切り詰め）
+            const diffResp = await github.rest.pulls.get({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number,
+              mediaType: { format: 'diff' }
+            });
+            let diff = diffResp.data;
+            const MAX = 30000;
+            if (diff.length > MAX) diff = diff.slice(0, MAX) + '\n... (truncated)';
+
+            const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: process.env.MISTRAL_MODEL,
+                temperature: 0.2,
+                max_tokens: 2000,
+                messages: [
+                  { role: 'system', content: 'あなたはシニアソフトウェアエンジニアです。以下のPull Requestのdiffをレビューし、日本語のMarkdownで回答してください。構成: ## 概要 / ## 良い点 / ## 指摘事項（各項目に重要度: 高/中/低を付記）/ ## 推奨アクション。問題がなければ指摘事項に「なし」と明記してください。' },
+                  { role: 'user', content: `PRタイトル: ${pr.title}\n\n${diff}` }
+                ]
+              })
+            });
+            if (!res.ok) {
+              throw new Error(`Mistral API ${res.status}: ${await res.text()}`);
+            }
+            const data = await res.json();
+            const reviewText = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(no output)';
+
+            await github.rest.pulls.createReview({
+              owner: repo.owner,
+              repo: repo.repo,
+              pull_number: pr.number,
+              event: 'COMMENT',
+              body: `${marker}\n## 🧠 Mistral レビュー (\`${process.env.MISTRAL_MODEL}\`)\n\n${reviewText}`
+            });
+            console.log('Mistral review posted');
