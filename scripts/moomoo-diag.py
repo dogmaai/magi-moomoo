@@ -23,6 +23,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import urllib.request
@@ -50,9 +51,30 @@ def info(msg):
     print(f"  [INFO] {msg}")
 
 
+def _bridge_auth_token():
+    """Resolve BRIDGE_AUTH_TOKEN: env first, then GCP Secret Manager — the
+    same source start-bridge.sh / moomoo-check-bridge.sh use — so standalone
+    invocations stay authenticated when bridge auth is enabled."""
+    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    if token:
+        return token
+    try:
+        out = subprocess.run(
+            ["gcloud", "secrets", "versions", "access", "latest",
+             "--secret=MOOMOO_BRIDGE_AUTH_TOKEN",
+             "--project=screen-share-459802"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def _bridge_request(url):
     headers = {}
-    token = os.environ.get("BRIDGE_AUTH_TOKEN")
+    token = _bridge_auth_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return urllib.request.Request(url, headers=headers)

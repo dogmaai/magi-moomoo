@@ -230,9 +230,25 @@ else
 fi
 
 # --- 1. Start moomoo-bridge if not running ---
-if curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
-  echo "[bridge] Already running and healthy on port ${BRIDGE_PORT}"
-else
+BRIDGE_NEEDS_START=true
+if BRIDGE_HEALTH=$(curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/health" 2>/dev/null); then
+  # The running process's BRIDGE_AUTH_TOKEN was fixed at its own start; a
+  # token resolved in this wrapper does not reach it. Compare the reported
+  # auth_required state and restart on mismatch so the "[auth] enabled"
+  # report above is actually true (and token rotation takes effect).
+  RUNNING_AUTH=$(printf '%s' "$BRIDGE_HEALTH" | "${PYTHON_BIN}" -c "import sys,json;print(json.load(sys.stdin).get('auth_required') is True)" 2>/dev/null || echo "unknown")
+  if [ -n "${BRIDGE_AUTH_TOKEN:-}" ] && [ "${RUNNING_AUTH}" != "True" ]; then
+    echo "[bridge] Running bridge reports auth_required=${RUNNING_AUTH} but a token is configured — restarting to enable auth"
+    _kill_stale_bridge "${BRIDGE_PORT}"
+  elif [ -z "${BRIDGE_AUTH_TOKEN:-}" ] && [ "${RUNNING_AUTH}" = "True" ]; then
+    echo "[bridge] WARNING: running bridge requires auth but BRIDGE_AUTH_TOKEN is unset — bridge calls will return 401"
+    BRIDGE_NEEDS_START=false
+  else
+    echo "[bridge] Already running and healthy on port ${BRIDGE_PORT}"
+    BRIDGE_NEEDS_START=false
+  fi
+fi
+if [ "${BRIDGE_NEEDS_START}" = "true" ]; then
   echo "[bridge] Starting ${BRIDGE_SCRIPT} on port ${BRIDGE_PORT}..."
   _kill_stale_bridge "${BRIDGE_PORT}"
   "${PYTHON_BIN}" "${BRIDGE_SCRIPT}" &
