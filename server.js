@@ -358,8 +358,10 @@ const TRUSTED_CALLER_EMAILS = (process.env.GATE_TRUSTED_CALLER_EMAILS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 if (TRUSTED_CALLER_EMAILS.length) {
   console.log('[GATE] OIDC subject verification enabled; trusted callers:', TRUSTED_CALLER_EMAILS.join(', '));
+} else if (process.env.GATE_ALLOW_LEGACY_SOURCE === 'true') {
+  console.warn('[GATE] GATE_TRUSTED_CALLER_EMAILS unset and GATE_ALLOW_LEGACY_SOURCE=true — legacy source-label mode (spoofable, operator opt-in)');
 } else {
-  console.warn('[GATE] GATE_TRUSTED_CALLER_EMAILS unset — legacy source-label mode (spoofable)');
+  console.warn('[GATE] GATE_TRUSTED_CALLER_EMAILS unset — all non-reducing orders require an approval token (legacy source label disabled; set GATE_ALLOW_LEGACY_SOURCE=true to opt in)');
 }
 
 let _selfAudience = null;
@@ -436,7 +438,9 @@ const orderGate = createOrderGate({
     return result.body?.positions || [];
   },
   trustedCallerEmails: TRUSTED_CALLER_EMAILS,
-  verifyIdToken: verifyCallerIdToken
+  verifyIdToken: verifyCallerIdToken,
+  allowLegacySourceLabel: process.env.GATE_ALLOW_LEGACY_SOURCE === 'true',
+  killSwitchTtlMs: process.env.GATE_KILL_SWITCH_TTL_MS ? Number(process.env.GATE_KILL_SWITCH_TTL_MS) : 5_000
 });
 
 app.post('/trade/place_order', async (req, res) => {

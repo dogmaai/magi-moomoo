@@ -6,6 +6,8 @@ Covers:
   - protected endpoints return 401 + WWW-Authenticate without/with a bad token
   - a correct token reaches the handler
   - legacy unauthenticated behavior when BRIDGE_AUTH_TOKEN is unset
+  - REAL /place_order fails closed when BRIDGE_AUTH_TOKEN is unset, while
+    read-only endpoints keep the legacy unauthenticated behavior
 
 Run:  python3 test/bridge_auth_test.py
 Requires the bridge dependencies (flask, moomoo SDK) — i.e. run on TIALA.
@@ -76,7 +78,42 @@ r = client.get("/_auth_probe")
 check("legacy mode (token unset)", r.status_code == 200, f"status={r.status_code}")
 r = client.get("/health")
 check("health legacy auth_required=false", r.get_json().get("auth_required") is False)
+
+# 7. Fail closed: REAL + token unset -> /place_order refused without a token.
+bridge.IS_REAL = True
+r = client.post("/place_order", json={"symbol": "AAPL", "side": "BUY", "qty": 1})
+check(
+    "REAL + no token -> place_order 403",
+    r.status_code == 403 and "authentication" in r.get_json().get("error", ""),
+    f"status={r.status_code} body={r.get_json()}",
+)
+r = client.post(
+    "/place_order",
+    json={"symbol": "AAPL", "side": "BUY", "qty": 1},
+    headers={"Authorization": "Bearer any-token"},
+)
+check(
+    "REAL + no token configured -> even a bearer guess is 403",
+    r.status_code == 403,
+    f"status={r.status_code}",
+)
+# Read-only paths keep legacy unauthenticated behavior in REAL mode.
+r = client.get("/_auth_probe")
+check("REAL + no token -> read-only probe still open", r.status_code == 200)
+bridge.IS_REAL = False
+
+# 8. REAL + token configured -> missing/wrong bearer is 401 before the handler.
 bridge.BRIDGE_AUTH_TOKEN = "test-secret-token"
+bridge.IS_REAL = True
+r = client.post("/place_order", json={"symbol": "AAPL", "side": "BUY", "qty": 1})
+check("REAL + token set, no auth -> 401", r.status_code == 401, f"status={r.status_code}")
+r = client.post(
+    "/place_order",
+    json={"symbol": "AAPL", "side": "BUY", "qty": 1},
+    headers={"Authorization": "Bearer wrong"},
+)
+check("REAL + wrong token -> 401", r.status_code == 401)
+bridge.IS_REAL = False
 
 if failures:
     print(f"\n{len(failures)} FAILED: {failures}")

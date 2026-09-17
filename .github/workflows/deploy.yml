@@ -50,6 +50,15 @@ jobs:
           service_account: 'github-actions@screen-share-459802.iam.gserviceaccount.com'
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+      - name: Enforce trusted-caller configuration
+        run: |
+          if [ -z "${{ vars.GATE_TRUSTED_CALLER_EMAILS }}" ] && [ "${{ vars.GATE_ALLOW_LEGACY_SOURCE }}" != "true" ]; then
+            echo "::error::GATE_TRUSTED_CALLER_EMAILS is empty and GATE_ALLOW_LEGACY_SOURCE is not 'true'." >&2
+            echo "::error::Deploying would leave the order gate without cryptographic caller verification." >&2
+            echo "::error::Set GATE_TRUSTED_CALLER_EMAILS (service-account allowlist) or explicitly opt into" >&2
+            echo "::error::spoofable legacy mode with GATE_ALLOW_LEGACY_SOURCE=true." >&2
+            exit 1
+          fi
       - name: Deploy magi-moomoo Cloud Run service
         run: |
           SECRET_ARGS=()
@@ -75,7 +84,7 @@ jobs:
             --network=magi-vpc \
             --subnet=magi-subnet-tokyo \
             --vpc-egress=private-ranges-only \
-            "--update-env-vars=^;^GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }};GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }};BRIDGE_PRIVATE_URL=http://10.42.0.10:11436;BRIDGE_ROUTE_MODE=auto" \
+            "--update-env-vars=^;^GATE_TRUSTED_CALLER_EMAILS=${{ vars.GATE_TRUSTED_CALLER_EMAILS }};GATE_OIDC_AUDIENCE=${{ vars.GATE_OIDC_AUDIENCE }};GATE_ALLOW_LEGACY_SOURCE=${{ vars.GATE_ALLOW_LEGACY_SOURCE }};BRIDGE_PRIVATE_URL=http://10.42.0.10:11436;BRIDGE_ROUTE_MODE=auto" \
             "${SECRET_ARGS[@]}" \
             --project=${{ env.PROJECT_ID }}
       - name: Register service URL in BigQuery

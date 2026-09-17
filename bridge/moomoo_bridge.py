@@ -25,6 +25,10 @@ MOOMOO_ACC_ID             Pin account id         (REAL: required; SIMULATE: 0=au
 MOOMOO_TRADE_PASSWORD     Trade unlock password  (REAL only; or use _MD5 variant)
 MOOMOO_TRADE_PASSWORD_MD5 Pre-computed MD5        (REAL only; alternative to plaintext)
 MOOMOO_ALLOW_REAL_ORDERS  true to allow REAL order placement (default false = read-only)
+BRIDGE_AUTH_TOKEN         Bearer token required on every endpoint except /health.
+                          When unset the bridge serves legacy unauthenticated
+                          requests, EXCEPT REAL /place_order, which always fails
+                          closed without a token.
 
 OpenTelemetry (OpenLIT)
 ---------------------
@@ -136,9 +140,13 @@ MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
 
 # Optional bearer token for the public tunnel endpoint. When set, every
 # endpoint except /health requires Authorization: Bearer <token>. During the
-# rollout an unset value preserves the legacy unauthenticated behavior.
+# rollout an unset value preserves the legacy unauthenticated behavior for
+# read-only endpoints and SIMULATE orders — but a REAL-capable bridge must
+# never accept an unauthenticated order, so REAL /place_order fails closed
+# whenever no token is configured.
 BRIDGE_AUTH_TOKEN = os.environ.get("BRIDGE_AUTH_TOKEN", "")
 PUBLIC_BRIDGE_PATHS = {"/health"}
+ORDER_ENDPOINTS = {"/place_order"}
 
 # Target sim_acc_type for auto-discovery (per MooMoo support guidance).
 # US market → STOCK_AND_OPTION, HK market → STOCK
@@ -217,9 +225,36 @@ def _bridge_bearer_token():
     return token.strip()
 
 
+if IS_REAL and not BRIDGE_AUTH_TOKEN:
+    log.warning(
+        "[AUTH] REAL env with BRIDGE_AUTH_TOKEN unset — order placement "
+        "refused (fail closed); read-only endpoints remain unauthenticated"
+    )
+elif not BRIDGE_AUTH_TOKEN:
+    log.warning(
+        "[AUTH] BRIDGE_AUTH_TOKEN unset — requests are unauthenticated "
+        "(SIMULATE mode; REAL orders would still be refused)"
+    )
+
+
 @app.before_request
 def require_bridge_auth():
-    if request.path in PUBLIC_BRIDGE_PATHS or not BRIDGE_AUTH_TOKEN:
+    if request.path in PUBLIC_BRIDGE_PATHS:
+        return None
+    if not BRIDGE_AUTH_TOKEN:
+        # Fail closed: an unauthenticated caller must never reach the broker
+        # in REAL mode. Read-only endpoints and SIMULATE orders keep the
+        # legacy behavior during the auth rollout.
+        if IS_REAL and request.path in ORDER_ENDPOINTS:
+            log.error(
+                "[AUTH] %s rejected: REAL order without BRIDGE_AUTH_TOKEN "
+                "(no caller authentication configured)", request.path,
+            )
+            return jsonify({
+                "success": False,
+                "error": "REAL orders require bridge authentication "
+                         "(BRIDGE_AUTH_TOKEN unset)",
+            }), 403
         return None
     token = _bridge_bearer_token()
     if token and hmac.compare_digest(token, BRIDGE_AUTH_TOKEN):
