@@ -245,9 +245,11 @@ if BRIDGE_HEALTH=$(curl -s --fail --max-time 2 "http://localhost:${BRIDGE_PORT}/
     # with an older token still reports true. Probe a protected endpoint
     # with the resolved token: /quote without params returns 400 when auth
     # passes, 401 only when the running process holds a different token.
+    # curl's -w already emits "000" on connect failure — appending another
+    # "000" via `|| echo` would yield "000\n000" and never match the check.
     PROBE_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
       -H "Authorization: Bearer ${BRIDGE_AUTH_TOKEN}" \
-      "http://localhost:${BRIDGE_PORT}/quote" 2>/dev/null || echo "000")
+      "http://localhost:${BRIDGE_PORT}/quote" 2>/dev/null || true)
     if [ "${PROBE_CODE}" = "401" ]; then
       echo "[bridge] Running bridge rejected the resolved BRIDGE_AUTH_TOKEN (401) — token was rotated; restarting to pick up the new token"
       _kill_stale_bridge "${BRIDGE_PORT}"
