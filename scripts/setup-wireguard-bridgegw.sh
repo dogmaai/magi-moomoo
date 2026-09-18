@@ -95,13 +95,16 @@ fi
 echo "=== [4/5] IP forwarding + DNAT :${BRIDGE_PORT} -> TIALA ==="
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-magi-forward.conf
-# Dedicated 'magi' table only — never touches pre-existing rules. DNAT is
-# restricted to VPC sources so the external IP cannot be used to reach the
-# bridge API. The file declares the table without flush/destroy verbs
+# Dedicated 'magi' table in a drop-in — the main /etc/nftables.conf is only
+# edited to add an include line, so a pre-existing ruleset survives at boot.
+# DNAT is restricted to VPC sources so the external IP cannot be used to
+# reach the bridge API. The table is declared without flush/destroy verbs
 # ('destroy' needs nftables >= 1.0.9; Debian 12 ships 1.0.6): it is empty at
 # every boot, and the script deletes it before re-applying on re-runs.
-cat > /etc/nftables.conf <<EOF
-#!/usr/sbin/nft -f
+NFT_DROPIN_DIR=/etc/nftables.d
+NFT_DROPIN="${NFT_DROPIN_DIR}/magi-bridge.conf"
+mkdir -p "$NFT_DROPIN_DIR"
+cat > "$NFT_DROPIN" <<EOF
 table ip magi {
     chain prerouting {
         type nat hook prerouting priority dstnat;
@@ -113,10 +116,17 @@ table ip magi {
     }
 }
 EOF
+if [ ! -f /etc/nftables.conf ] || grep -q 'table ip magi' /etc/nftables.conf; then
+  # Missing, or written by an earlier version of this script (which only ever
+  # wrote this table inline — safe to replace with the include stub).
+  printf '#!/usr/sbin/nft -f\n\ninclude "%s/*.conf"\n' "$NFT_DROPIN_DIR" > /etc/nftables.conf
+elif ! grep -Eq "^[[:space:]]*include[[:space:]]+\"?${NFT_DROPIN_DIR}/" /etc/nftables.conf; then
+  printf '\ninclude "%s/*.conf"\n' "$NFT_DROPIN_DIR" >> /etc/nftables.conf
+fi
 systemctl enable nftables >/dev/null 2>&1 || true
-# Idempotent live apply: drop our table (if it exists) then load the file.
+# Idempotent live apply: drop our table (if it exists) then load the drop-in.
 nft delete table ip magi 2>/dev/null || true
-nft -f /etc/nftables.conf
+nft -f "$NFT_DROPIN"
 
 echo "=== [5/5] Enable + verify ==="
 systemctl enable wg-quick@wg0 >/dev/null 2>&1

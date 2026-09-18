@@ -19,7 +19,8 @@ Neither side needs the other's key to *start*:
 ## Prerequisites (from Jun, after P2)
 
 - `bridge-gw` VM exists in `magi-vpc` (10.42.0.10, asia-northeast1-a) with a
-  static external IP and `udp:51820` open (`magi-allow-wg` firewall rule).
+  static external IP, `can-ip-forward` enabled on the instance, and
+  `udp:51820` open (`magi-allow-wg` firewall rule).
 - A VPC **ingress** rule allows `tcp:11436` to the VM — this is the relayed
   bridge port VPC peers will hit; it is separate from the WireGuard rule.
 - Step 1 above done on the VM → Jun provides `WG_SERVER_ENDPOINT`
@@ -29,7 +30,7 @@ Neither side needs the other's key to *start*:
 
 ```bash
 cd ~/magi-moomoo   # TIALA clone (adjust WorkingDirectory if different)
-git fetch origin && git checkout <branch-with-these-scripts>
+git fetch origin && git checkout main && git pull
 WG_SERVER_ENDPOINT=<bridge-gw external IP>:51820 \
 WG_SERVER_PUBKEY=<server pubkey> \
 bash scripts/setup-wireguard-tiala.sh
@@ -72,7 +73,7 @@ proves TIALA reachability without exposing a token on the VM.
 ## Rollback
 
 ```bash
-sudo wg-quick down wg0
+sudo wg-quick down "$(brew --prefix)/etc/wireguard/wg0.conf"
 sudo launchctl unload /Library/LaunchDaemons/com.magi.wireguard.plist
 sudo rm /Library/LaunchDaemons/com.magi.wireguard.plist
 ```

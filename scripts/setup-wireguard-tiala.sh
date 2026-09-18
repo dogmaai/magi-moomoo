@@ -26,10 +26,12 @@
 #   WG_CLIENT_IP         client tunnel address (default 10.99.0.2/32)
 #   WG_SERVER_IP         server tunnel address   (default 10.99.0.1)
 #   WG_DIR               config dir (default /opt/homebrew/etc/wireguard,
-#                        /usr/local/etc/wireguard on Intel brew)
+#                        /usr/local/etc/wireguard on Intel brew). wg-quick is
+#                        invoked with the explicit config path, so a custom
+#                        WG_DIR works for both the script and the LaunchDaemon.
 #
 # Rollback:
-#   sudo wg-quick down wg0
+#   sudo wg-quick down "$(brew --prefix)/etc/wireguard/wg0.conf"
 #   sudo launchctl unload /Library/LaunchDaemons/com.magi.wireguard.plist
 #   sudo rm /Library/LaunchDaemons/com.magi.wireguard.plist
 # (Cloudflare tunnel path is untouched — keep it running until P8.)
@@ -118,7 +120,7 @@ sudo tee "$PLIST_PATH" >/dev/null <<EOF
     <array>
         <string>${BREW_PREFIX}/bin/wg-quick</string>
         <string>up</string>
-        <string>wg0</string>
+        <string>${WG_DIR}/wg0.conf</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -141,8 +143,11 @@ sudo launchctl load "$PLIST_PATH"
 echo "Installed as LaunchDaemon (runs as root at boot; the utun interface persists)"
 
 echo "=== [5/5] Bringing tunnel up + verification ==="
-sudo wg-quick down wg0 2>/dev/null || true
-sudo wg-quick up wg0
+# Pass the config path explicitly: `wg-quick up wg0` would only search the
+# default brew config dir and ignore a custom WG_DIR. The interface name is
+# still derived from the basename (wg0), so `wg show wg0` keeps working.
+sudo wg-quick down "${WG_DIR}/wg0.conf" 2>/dev/null || true
+sudo wg-quick up "${WG_DIR}/wg0.conf"
 
 echo ""
 echo ">>> REGISTER THIS ON bridge-gw (wg0.conf [Peer] PublicKey) <<<"
