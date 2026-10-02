@@ -74,20 +74,23 @@ fi
 
 # deployment.environment.name is the current semantic-convention attribute
 # name checked by Grafana Cloud; deployment.environment is kept for older
-# consumers. An operator-supplied host.id inside OTEL_RESOURCE_ATTRIBUTES is
-# preserved (not duplicated).
-OTEL_DEFAULT_ATTRS="service.namespace=magi,deployment.environment=production,deployment.environment.name=production"
+# consumers. Both default to OTEL_DEPLOYMENT_ENVIRONMENT — the key the bridge
+# itself reads — so the old and new names stay consistent. A non-empty
+# operator value inside OTEL_RESOURCE_ATTRIBUTES always wins; an empty value
+# (key=) is treated as unset so the default is appended.
+OTEL_DEPLOY_ENV="${OTEL_DEPLOYMENT_ENVIRONMENT:-production}"
+OTEL_DEFAULT_KVS="service.namespace=magi deployment.environment=${OTEL_DEPLOY_ENV} deployment.environment.name=${OTEL_DEPLOY_ENV}"
 if [ -n "${OTEL_HOST_ID}" ]; then
-  # An operator-supplied non-empty host.id wins. An empty value (host.id=) is
-  # treated as unset so the detected id is applied instead.
-  case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
-    *,host.id=[!,]*) ;;
-    *)
-      OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS},host.id=${OTEL_HOST_ID}"
-      echo "[otel] host.id=${OTEL_HOST_ID}"
-      ;;
-  esac
+  OTEL_DEFAULT_KVS="${OTEL_DEFAULT_KVS} host.id=${OTEL_HOST_ID}"
+  echo "[otel] host.id=${OTEL_HOST_ID}"
 fi
+OTEL_DEFAULT_ATTRS=""
+for kv in ${OTEL_DEFAULT_KVS}; do
+  case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
+    *,${kv%%=*}=[!,]*) ;;
+    *) OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS:+${OTEL_DEFAULT_ATTRS},}${kv}" ;;
+  esac
+done
 OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}${OTEL_DEFAULT_ATTRS}"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
 
