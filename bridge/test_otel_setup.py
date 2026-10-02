@@ -106,6 +106,8 @@ class ScriptHygieneTests(unittest.TestCase):
     def test_resource_attributes(self):
         self.assertIn("service.namespace=magi", self.script)
         self.assertIn("deployment.environment=production", self.script)
+        self.assertIn("deployment.environment.name=production", self.script)
+        self.assertIn("host.id=", self.script)
 
     def test_python_bin_prefers_venv(self):
         self.assertIn('PYTHON_BIN="${VIRTUAL_ENV}/bin/python"', self.script)

@@ -51,7 +51,42 @@ TUNNEL_MODE="${1:-cloudflared}"
 # OTEL_EXPORTER_OTLP_HEADERS from it at runtime.
 OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp}"
 OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
-OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}service.namespace=magi,deployment.environment=production"
+
+# host.id is required by Grafana Cloud Application Observability. The bridge
+# runs on bare metal (TIALA, macOS), not Kubernetes, so k8s.node.name does not
+# apply and host.id must be set explicitly. Resolution order:
+#   1. OTEL_HOST_ID env var (operator override)
+#   2. macOS IOPlatformUUID (hardware UUID — stable across reboots)
+#   3. /etc/machine-id (Linux)
+#   4. hostname (last resort)
+OTEL_HOST_ID="${OTEL_HOST_ID:-}"
+if [ -z "${OTEL_HOST_ID}" ]; then
+  if command -v ioreg >/dev/null 2>&1; then
+    OTEL_HOST_ID="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/ {print $4; exit}')"
+  fi
+  if [ -z "${OTEL_HOST_ID}" ] && [ -r /etc/machine-id ]; then
+    OTEL_HOST_ID="$(cat /etc/machine-id 2>/dev/null)"
+  fi
+  if [ -z "${OTEL_HOST_ID}" ]; then
+    OTEL_HOST_ID="$(hostname 2>/dev/null || true)"
+  fi
+fi
+
+# deployment.environment.name is the current semantic-convention attribute
+# name checked by Grafana Cloud; deployment.environment is kept for older
+# consumers. An operator-supplied host.id inside OTEL_RESOURCE_ATTRIBUTES is
+# preserved (not duplicated).
+OTEL_DEFAULT_ATTRS="service.namespace=magi,deployment.environment=production,deployment.environment.name=production"
+if [ -n "${OTEL_HOST_ID}" ]; then
+  case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
+    *",host.id="*) ;;
+    *)
+      OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS},host.id=${OTEL_HOST_ID}"
+      echo "[otel] host.id=${OTEL_HOST_ID}"
+      ;;
+  esac
+fi
+OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}${OTEL_DEFAULT_ATTRS}"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
 
 # Prefer the project venv interpreter (launchd sets VIRTUAL_ENV); fall back to
