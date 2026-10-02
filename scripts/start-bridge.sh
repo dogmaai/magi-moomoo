@@ -51,7 +51,52 @@ TUNNEL_MODE="${1:-cloudflared}"
 # OTEL_EXPORTER_OTLP_HEADERS from it at runtime.
 OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp}"
 OTEL_SERVICE_NAME="${OTEL_SERVICE_NAME:-moomoo-bridge}"
-OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}service.namespace=magi,deployment.environment=production"
+
+# host.id is required by Grafana Cloud Application Observability. The bridge
+# runs on bare metal (TIALA, macOS), not Kubernetes, so k8s.node.name does not
+# apply and host.id must be set explicitly. Resolution order:
+#   1. OTEL_HOST_ID env var (operator override)
+#   2. macOS IOPlatformUUID (hardware UUID — stable across reboots)
+#   3. /etc/machine-id (Linux)
+#   4. hostname (last resort)
+OTEL_HOST_ID="${OTEL_HOST_ID:-}"
+if [ -z "${OTEL_HOST_ID}" ]; then
+  if command -v ioreg >/dev/null 2>&1; then
+    OTEL_HOST_ID="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/ {print $4; exit}')"
+  fi
+  if [ -z "${OTEL_HOST_ID}" ] && [ -r /etc/machine-id ]; then
+    OTEL_HOST_ID="$(cat /etc/machine-id 2>/dev/null)"
+  fi
+  if [ -z "${OTEL_HOST_ID}" ]; then
+    OTEL_HOST_ID="$(hostname 2>/dev/null || true)"
+  fi
+fi
+
+# deployment.environment.name is the current semantic-convention attribute
+# name checked by Grafana Cloud; deployment.environment is kept for older
+# consumers. Both default to OTEL_DEPLOYMENT_ENVIRONMENT — the key the bridge
+# itself reads — so the old and new names stay consistent. A non-empty
+# operator value inside OTEL_RESOURCE_ATTRIBUTES always wins; an empty value
+# (key=) is treated as unset so the default is appended.
+OTEL_DEPLOY_ENV="${OTEL_DEPLOYMENT_ENVIRONMENT:-production}"
+# Array keeps values containing whitespace intact through the loop.
+OTEL_DEFAULT_KVS=(
+  "service.namespace=magi"
+  "deployment.environment=${OTEL_DEPLOY_ENV}"
+  "deployment.environment.name=${OTEL_DEPLOY_ENV}"
+)
+if [ -n "${OTEL_HOST_ID}" ]; then
+  OTEL_DEFAULT_KVS+=("host.id=${OTEL_HOST_ID}")
+  echo "[otel] host.id=${OTEL_HOST_ID}"
+fi
+OTEL_DEFAULT_ATTRS=""
+for kv in "${OTEL_DEFAULT_KVS[@]}"; do
+  case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
+    *,${kv%%=*}=[!,]*) ;;
+    *) OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS:+${OTEL_DEFAULT_ATTRS},}${kv}" ;;
+  esac
+done
+OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES:+${OTEL_RESOURCE_ATTRIBUTES},}${OTEL_DEFAULT_ATTRS}"
 export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
 
 # Prefer the project venv interpreter (launchd sets VIRTUAL_ENV); fall back to
