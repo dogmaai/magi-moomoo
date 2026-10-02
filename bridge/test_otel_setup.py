@@ -103,11 +103,83 @@ class ScriptHygieneTests(unittest.TestCase):
     def test_header_uses_encoded_space(self):
         self.assertIn("Authorization=Basic%20", self.script)
 
+    def _run_otel_block(self, env=None):
+        """Execute the OTEL env block of start-bridge.sh in bash and return
+        the resulting OTEL_RESOURCE_ATTRIBUTES string."""
+        match = re.search(
+            r'^OTEL_EXPORTER_OTLP_ENDPOINT="\$\{OTEL_EXPORTER_OTLP_ENDPOINT'
+            r'.*?^export OTEL_EXPORTER_OTLP_ENDPOINT OTEL_SERVICE_NAME '
+            r'OTEL_RESOURCE_ATTRIBUTES$',
+            self.script, re.S | re.M,
+        )
+        self.assertIsNotNone(match, "OTEL env block not found in start-bridge.sh")
+        proc_env = dict(os.environ)
+        proc_env.pop("OTEL_RESOURCE_ATTRIBUTES", None)
+        proc_env.pop("OTEL_DEPLOYMENT_ENVIRONMENT", None)
+        proc_env.pop("OTEL_HOST_ID", None)
+        if env:
+            proc_env.update(env)
+        out = subprocess.run(
+            [
+                "bash", "-c",
+                f'set -e\n{match.group(0)}\nprintf "__ATTRS__%s" "${{OTEL_RESOURCE_ATTRIBUTES}}"',
+            ],
+            capture_output=True, text=True, check=True, env=proc_env,
+        )
+        # The block may echo diagnostics (e.g. "[otel] host.id=...") to
+        # stdout before the sentinel; take only what follows it.
+        return out.stdout.split("__ATTRS__", 1)[1]
+
+    @staticmethod
+    def _parse_attrs(attrs):
+        parsed = {}
+        for pair in attrs.split(","):
+            key, _, value = pair.partition("=")
+            parsed[key] = value
+        return parsed
+
     def test_resource_attributes(self):
-        self.assertIn("service.namespace=magi", self.script)
-        self.assertIn("deployment.environment=production", self.script)
-        self.assertIn("deployment.environment.name=production", self.script)
-        self.assertIn("host.id=", self.script)
+        block = self._run_otel_block()
+        attrs = self._parse_attrs(block)
+        self.assertEqual("magi", attrs["service.namespace"])
+        self.assertEqual("production", attrs["deployment.environment"])
+        self.assertEqual("production", attrs["deployment.environment.name"])
+        self.assertTrue(attrs["host.id"])
+
+    def test_resource_attributes_operator_overrides_win(self):
+        block = self._run_otel_block(
+            env={
+                "OTEL_RESOURCE_ATTRIBUTES":
+                    "host.id=custom-id,deployment.environment.name=staging",
+            }
+        )
+        attrs = self._parse_attrs(block)
+        self.assertEqual("custom-id", attrs["host.id"])
+        self.assertEqual("staging", attrs["deployment.environment.name"])
+        self.assertEqual(1, block.count("host.id="))
+        self.assertEqual(1, block.count("deployment.environment.name="))
+
+    def test_resource_attributes_env_name_consistency(self):
+        # OTEL_DEPLOYMENT_ENVIRONMENT feeds both the old and new semconv keys.
+        attrs = self._parse_attrs(
+            self._run_otel_block(env={"OTEL_DEPLOYMENT_ENVIRONMENT": "staging"})
+        )
+        self.assertEqual("staging", attrs["deployment.environment"])
+        self.assertEqual("staging", attrs["deployment.environment.name"])
+
+    def test_resource_attributes_whitespace_host_id(self):
+        attrs = self._parse_attrs(
+            self._run_otel_block(env={"OTEL_HOST_ID": "id with space"})
+        )
+        self.assertEqual("id with space", attrs["host.id"])
+
+    def test_resource_attributes_empty_host_id_falls_back(self):
+        # An operator's empty host.id= is treated as unset; the detected
+        # id is appended last so the SDK's last-wins parse keeps it.
+        attrs = self._parse_attrs(
+            self._run_otel_block(env={"OTEL_RESOURCE_ATTRIBUTES": "host.id="})
+        )
+        self.assertTrue(attrs["host.id"])
 
     def test_python_bin_prefers_venv(self):
         self.assertIn('PYTHON_BIN="${VIRTUAL_ENV}/bin/python"', self.script)

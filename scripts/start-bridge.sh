@@ -79,13 +79,18 @@ fi
 # operator value inside OTEL_RESOURCE_ATTRIBUTES always wins; an empty value
 # (key=) is treated as unset so the default is appended.
 OTEL_DEPLOY_ENV="${OTEL_DEPLOYMENT_ENVIRONMENT:-production}"
-OTEL_DEFAULT_KVS="service.namespace=magi deployment.environment=${OTEL_DEPLOY_ENV} deployment.environment.name=${OTEL_DEPLOY_ENV}"
+# Array keeps values containing whitespace intact through the loop.
+OTEL_DEFAULT_KVS=(
+  "service.namespace=magi"
+  "deployment.environment=${OTEL_DEPLOY_ENV}"
+  "deployment.environment.name=${OTEL_DEPLOY_ENV}"
+)
 if [ -n "${OTEL_HOST_ID}" ]; then
-  OTEL_DEFAULT_KVS="${OTEL_DEFAULT_KVS} host.id=${OTEL_HOST_ID}"
+  OTEL_DEFAULT_KVS+=("host.id=${OTEL_HOST_ID}")
   echo "[otel] host.id=${OTEL_HOST_ID}"
 fi
 OTEL_DEFAULT_ATTRS=""
-for kv in ${OTEL_DEFAULT_KVS}; do
+for kv in "${OTEL_DEFAULT_KVS[@]}"; do
   case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
     *,${kv%%=*}=[!,]*) ;;
     *) OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS:+${OTEL_DEFAULT_ATTRS},}${kv}" ;;
