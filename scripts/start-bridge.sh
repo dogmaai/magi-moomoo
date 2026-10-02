@@ -78,8 +78,10 @@ fi
 # preserved (not duplicated).
 OTEL_DEFAULT_ATTRS="service.namespace=magi,deployment.environment=production,deployment.environment.name=production"
 if [ -n "${OTEL_HOST_ID}" ]; then
+  # An operator-supplied non-empty host.id wins. An empty value (host.id=) is
+  # treated as unset so the detected id is applied instead.
   case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
-    *",host.id="*) ;;
+    *,host.id=[!,]*) ;;
     *)
       OTEL_DEFAULT_ATTRS="${OTEL_DEFAULT_ATTRS},host.id=${OTEL_HOST_ID}"
       echo "[otel] host.id=${OTEL_HOST_ID}"
