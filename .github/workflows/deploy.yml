@@ -18,14 +18,14 @@ jobs:
       image_tag: ${{ steps.meta.outputs.tag }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: 'projects/398890937507/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'github-actions@screen-share-459802.iam.gserviceaccount.com'
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
       - name: Set image tag
@@ -44,12 +44,12 @@ jobs:
       id-token: write
     steps:
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: 'projects/398890937507/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'github-actions@screen-share-459802.iam.gserviceaccount.com'
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
       - name: Enforce trusted-caller configuration
         run: |
           if [ -z "${{ vars.GATE_TRUSTED_CALLER_EMAILS }}" ] && [ "${{ vars.GATE_ALLOW_LEGACY_SOURCE }}" != "true" ]; then
