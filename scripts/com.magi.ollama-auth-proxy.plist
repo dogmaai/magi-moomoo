@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.ollama-auth-proxy.plist — macOS LaunchAgent for the Ollama
+  bearer-auth proxy that fronts the Cloudflare named tunnel ingress.
+
+  The proxy reads OLLAMA_AUTH_TOKEN from ~/.config/magi-moomoo/ollama.env
+  (chmod 600; source of truth is GCP Secret Manager `OLLAMA_AUTH_TOKEN`).
+
+  Install:
+    cp scripts/com.magi.ollama-auth-proxy.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.magi.ollama-auth-proxy.plist
+
+  Then point the tunnel at the proxy instead of raw Ollama:
+    ~/.cloudflared/config-magi-ollama.yml:
+      service: http://127.0.0.1:11437   # was http://127.0.0.1:11434
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.ollama-auth-proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; [ -f "$HOME/.config/magi-moomoo/ollama.env" ] &amp;&amp; . "$HOME/.config/magi-moomoo/ollama.env"; set +a; exec /usr/bin/python3 /Users/jun/magi-moomoo/scripts/ollama-auth-proxy.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jun/magi-moomoo</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/ollama-auth-proxy.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/ollama-auth-proxy.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
