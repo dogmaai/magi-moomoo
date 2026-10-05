@@ -70,9 +70,18 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         return token is not None and hmac.compare_digest(token, AUTH_TOKEN)
 
     def _reject(self):
+        # Drain any request body so it cannot poison the next request on a
+        # keep-alive connection (an unconsumed POST body would be parsed as
+        # the start of the next request line), then close — a rejected
+        # connection is done either way.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
+        self.close_connection = True
         body = json.dumps({"error": "unauthorized"}).encode()
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Connection", "close")
         self.send_header("WWW-Authenticate", 'Bearer realm="ollama"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
