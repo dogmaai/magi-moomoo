@@ -46,6 +46,7 @@ PYROSCOPE_BASIC_AUTH_PASSWORD
 """
 
 import os
+import math
 import socket
 import time
 import logging
@@ -771,6 +772,9 @@ def get_account_info():
     Return paper-trading account info (balance, buying power, etc.).
 
     Response JSON:
+        acc_id          int     the account the bridge queried/trades on
+                                (broker-reported when present, else the
+                                resolved MOOMOO_ACC_ID pin/discovery value)
         total_assets    float
         cash            float   (USD cash)
         market_value    float   (securities market value)
@@ -778,6 +782,7 @@ def get_account_info():
         unrealized_pl   float
         risk_status     str
         currency        str
+        trd_env         str     SIMULATE|REAL the bridge is bound to
     """
     try:
         trd_ctx = _get_trd_ctx()
@@ -798,7 +803,15 @@ def get_account_info():
         unrealized_pl = _safe_float(row.get("unrealized_pl"))
         risk_status = str(row.get("risk_status", ""))
 
+        # The account id the bridge actually queried — broker-reported
+        # when the frame carries it, else the resolved pin/discovery
+        # value. Callers verify this against an allowlist before any
+        # order path (magi-core#581 §6); never omit it silently.
+        acc_id_val = _safe_float(row.get("acc_id"), default=None)
+        if acc_id_val is None or not math.isfinite(acc_id_val) or acc_id_val <= 0:
+            acc_id_val = MOOMOO_ACC_ID
         result = {
+            "acc_id": int(acc_id_val),
             "total_assets": total_assets,
             "cash": cash,
             "market_value": market_val,
