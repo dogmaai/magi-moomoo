@@ -46,6 +46,7 @@ PYROSCOPE_BASIC_AUTH_PASSWORD
 """
 
 import os
+import math
 import socket
 import time
 import logging
@@ -771,6 +772,9 @@ def get_account_info():
     Return paper-trading account info (balance, buying power, etc.).
 
     Response JSON:
+        acc_id          int     the account the bridge queried/trades on
+                                (broker-reported when present, else the
+                                resolved MOOMOO_ACC_ID pin/discovery value)
         total_assets    float
         cash            float   (USD cash)
         market_value    float   (securities market value)
@@ -778,9 +782,20 @@ def get_account_info():
         unrealized_pl   float
         risk_status     str
         currency        str
+        trd_env         str     SIMULATE|REAL the bridge is bound to
     """
     try:
         trd_ctx = _get_trd_ctx()
+        # The account id may still be unresolved (0) if first-connect
+        # discovery failed — e.g. OpenD was briefly unreachable. Retry
+        # discovery here so the endpoint self-heals instead of reporting
+        # acc_id=0 forever; callers verify acc_id against an allowlist
+        # (magi-core#581 §6) and 0 can never be legitimate.
+        if MOOMOO_ACC_ID <= 0 and not IS_REAL:
+            _discover_simulate_acc_id(trd_ctx)
+        if MOOMOO_ACC_ID <= 0:
+            log.error("[ACCOUNT] acc_id unresolved (0) — refusing to report account info")
+            return jsonify({"error": "acc_id unresolved: SIMULATE account discovery failed; retry after connectivity recovers"}), 503
         ret, data = trd_ctx.accinfo_query(
             trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
         )
@@ -798,7 +813,15 @@ def get_account_info():
         unrealized_pl = _safe_float(row.get("unrealized_pl"))
         risk_status = str(row.get("risk_status", ""))
 
+        # The account id the bridge actually queried — broker-reported
+        # when the frame carries it, else the resolved pin/discovery
+        # value. Callers verify this against an allowlist before any
+        # order path (magi-core#581 §6); never omit it silently.
+        acc_id_val = _safe_float(row.get("acc_id"), default=None)
+        if acc_id_val is None or not math.isfinite(acc_id_val) or acc_id_val <= 0:
+            acc_id_val = MOOMOO_ACC_ID
         result = {
+            "acc_id": int(acc_id_val),
             "total_assets": total_assets,
             "cash": cash,
             "market_value": market_val,
