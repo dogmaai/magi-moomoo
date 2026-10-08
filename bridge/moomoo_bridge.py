@@ -786,6 +786,16 @@ def get_account_info():
     """
     try:
         trd_ctx = _get_trd_ctx()
+        # The account id may still be unresolved (0) if first-connect
+        # discovery failed — e.g. OpenD was briefly unreachable. Retry
+        # discovery here so the endpoint self-heals instead of reporting
+        # acc_id=0 forever; callers verify acc_id against an allowlist
+        # (magi-core#581 §6) and 0 can never be legitimate.
+        if MOOMOO_ACC_ID <= 0 and not IS_REAL:
+            _discover_simulate_acc_id(trd_ctx)
+        if MOOMOO_ACC_ID <= 0:
+            log.error("[ACCOUNT] acc_id unresolved (0) — refusing to report account info")
+            return jsonify({"error": "acc_id unresolved: SIMULATE account discovery failed; retry after connectivity recovers"}), 503
         ret, data = trd_ctx.accinfo_query(
             trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
         )
