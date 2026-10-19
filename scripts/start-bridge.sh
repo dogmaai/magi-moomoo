@@ -340,8 +340,9 @@ if [ "${BRIDGE_NEEDS_START}" = "true" ]; then
     echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT} and OpenD."
     # If the child already exited, surface its code: 78 (EX_CONFIG) means the
     # config itself is bad and the watchdog must not retry; anything else is
-    # transient and stays exit 1.
-    if ! kill -0 "${BRIDGE_PID}" 2>/dev/null; then
+    # transient and stays exit 1. An exited-but-unreaped background child is a
+    # zombie, and kill -0 still succeeds on zombies — so also match a Z state.
+    if ! kill -0 "${BRIDGE_PID}" 2>/dev/null || [[ "$(ps -p "${BRIDGE_PID}" -o state= 2>/dev/null)" =~ Z ]]; then
       _child_rc=0
       wait "${BRIDGE_PID}" || _child_rc=$?
       if [ "${_child_rc}" -eq "${EX_CONFIG}" ]; then
