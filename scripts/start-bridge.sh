@@ -27,6 +27,19 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
+# Exit code used for configuration errors. The watchdog daemon
+# (start-bridge-daemon.sh) treats 78 (EX_CONFIG) as non-retryable and stops
+# the restart loop; transient failures keep any other exit code.
+EX_CONFIG=78
+
+# Fail fast on a malformed account id BEFORE any secret/network work, so a
+# hand-edited plist or bridge.env (e.g. MOOMOO_ACC_ID="string 1302593")
+# surfaces its real cause instead of an opaque downstream crash.
+if [ -n "${MOOMOO_ACC_ID:-}" ] && ! [[ "${MOOMOO_ACC_ID}" =~ ^[0-9]+$ ]]; then
+  echo "[config] ERROR: MOOMOO_ACC_ID must be numeric, got '${MOOMOO_ACC_ID}' — fix the launchd plist / env and restart" >&2
+  exit "${EX_CONFIG}"
+fi
+
 # OpenTelemetry OTLP configuration for Grafana Cloud.
 #
 # GRAFANA_OTLP_TOKEN is the ONLY sanctioned credential for OTLP export. It must
@@ -267,6 +280,8 @@ _wait_for_tunnel_health() {
 # If not set, the bridge auto-discovers the correct account
 # (US → STOCK_AND_OPTION, HK → STOCK) via get_acc_list().
 # Use /accounts endpoint to verify the selected account.
+# MOOMOO_ACC_ID is already validated at the top of this script (non-numeric
+# values exit ${EX_CONFIG} before any network work).
 if [ -n "${MOOMOO_ACC_ID}" ]; then
   export MOOMOO_ACC_ID
   echo "[config] MOOMOO_ACC_ID=${MOOMOO_ACC_ID} (from env)"

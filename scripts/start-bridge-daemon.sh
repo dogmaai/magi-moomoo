@@ -61,7 +61,16 @@ restart_bridge() {
   fi
 
   sleep 3
-  bash "${REPO_ROOT}/scripts/start-bridge.sh" || true
+  # Configuration errors (exit 78 = EX_CONFIG) are permanent: retrying with
+  # the same plist/env can never succeed, so the watchdog exits cleanly and
+  # launchd (KeepAlive SuccessfulExit=false) does not restart it. Transient
+  # startup failures keep any other exit code and stay retryable.
+  local rc=0
+  bash "${REPO_ROOT}/scripts/start-bridge.sh" || rc=$?
+  if [ "${rc}" -eq 78 ]; then
+    log "FATAL: start-bridge.sh exited 78 (configuration error) — stopping watchdog. Fix the config (plist/bridge.env) and restart the launch agent."
+    exit 0
+  fi
 }
 
 log "Starting MooMoo bridge daemon (INTERVAL=${INTERVAL}s, MAX_FAIL=${MAX_FAIL})"

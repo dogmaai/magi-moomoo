@@ -46,6 +46,7 @@ PYROSCOPE_BASIC_AUTH_PASSWORD
 """
 
 import os
+import sys
 import math
 import socket
 import time
@@ -137,7 +138,22 @@ TRADE_PASSWORD_MD5 = os.environ.get("MOOMOO_TRADE_PASSWORD_MD5") or None
 # STOCK_AND_OPTION account on first trade context use.
 # REAL: MOOMOO_ACC_ID MUST be set explicitly (no auto-discovery in REAL, to
 # avoid selecting the wrong sub-account, e.g. CASH/DERIVATIVES).
-MOOMOO_ACC_ID = int(os.environ.get("MOOMOO_ACC_ID", "0"))
+# A non-numeric value (e.g. a hand-edited launchd plist like "string 1302593")
+# used to kill the bridge with a bare ValueError at import — an opaque crash
+# loop that took the whole order path down for days. Fail closed instead with
+# an explicit message so the real cause shows up in stderr immediately.
+_raw_acc_id = os.environ.get("MOOMOO_ACC_ID", "0")
+try:
+    MOOMOO_ACC_ID = int(_raw_acc_id)
+except ValueError:
+    print(
+        f"[config] FATAL: MOOMOO_ACC_ID must be a numeric account id, got {_raw_acc_id!r}",
+        file=sys.stderr,
+    )
+    # 78 (EX_CONFIG): start-bridge-daemon.sh treats this as a permanent
+    # configuration error and stops the restart loop; transient failures use
+    # other codes and stay retryable.
+    sys.exit(78)
 
 # Optional bearer token for the public tunnel endpoint. When set, every
 # endpoint except /health requires Authorization: Bearer <token>. During the
