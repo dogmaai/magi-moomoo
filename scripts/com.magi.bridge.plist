@@ -37,6 +37,12 @@
         <string>magi-bridge</string>
         <key>CLOUDFLARE_TUNNEL_URL</key>
         <string>https://opend.yourdomain.com</string>
+        <!-- Optional: pin a SIMULATE account. MUST be digits only —
+             a non-numeric value (e.g. "string 1302593") makes the bridge
+             exit immediately at startup.
+        <key>MOOMOO_ACC_ID</key>
+        <string>1302593</string>
+        -->
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
