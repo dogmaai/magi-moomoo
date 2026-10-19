@@ -75,19 +75,32 @@ check(
 
 # 4. start-bridge.sh fails fast with exit 78 on a bad value — before any
 #    network/secret side effects, so this is safe to run anywhere with bash.
-r = subprocess.run(
-    ["bash", "scripts/start-bridge.sh"],
-    capture_output=True,
-    text=True,
-    env={**os.environ, "MOOMOO_ACC_ID": "string 1302593"},
-    cwd=REPO_ROOT,
-)
+def run_wrapper(acc_id):
+    return subprocess.run(
+        ["bash", "scripts/start-bridge.sh"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "MOOMOO_ACC_ID": acc_id},
+        cwd=REPO_ROOT,
+    )
+
+
+r = run_wrapper("string 1302593")
 check("wrapper exits 78 on bad MOOMOO_ACC_ID", r.returncode == 78, f"rc={r.returncode} stderr={r.stderr.strip()[:200]}")
 check(
     "wrapper names the value",
     "MOOMOO_ACC_ID" in r.stderr and "string 1302593" in r.stderr,
     r.stderr.strip()[:200],
 )
+
+# 5. Overlong all-digit values are also config errors in the shell: a plain
+#    ^[0-9]+$ would let them through to Python's int() digit limit (~4300
+#    digits), where the 78 exit code is lost inside the startup health check
+#    and the watchdog would retry forever.
+r = run_wrapper("9" * 4301)
+check("wrapper exits 78 on >19-digit MOOMOO_ACC_ID", r.returncode == 78, f"rc={r.returncode}")
+r = run_wrapper("9" * 20)
+check("wrapper exits 78 on 20-digit MOOMOO_ACC_ID", r.returncode == 78, f"rc={r.returncode}")
 
 print()
 if failures:

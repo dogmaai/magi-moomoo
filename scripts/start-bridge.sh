@@ -35,8 +35,11 @@ EX_CONFIG=78
 # Fail fast on a malformed account id BEFORE any secret/network work, so a
 # hand-edited plist or bridge.env (e.g. MOOMOO_ACC_ID="string 1302593")
 # surfaces its real cause instead of an opaque downstream crash.
-if [ -n "${MOOMOO_ACC_ID:-}" ] && ! [[ "${MOOMOO_ACC_ID}" =~ ^[0-9]+$ ]]; then
-  echo "[config] ERROR: MOOMOO_ACC_ID must be numeric, got '${MOOMOO_ACC_ID}' — fix the launchd plist / env and restart" >&2
+# Bound at 19 digits (INT64 max): a longer all-digit value would pass a plain
+# digits check but then fail Python's int() digit limit deep in the bridge —
+# where the watchdog cannot tell a config error from a transient one.
+if [ -n "${MOOMOO_ACC_ID:-}" ] && ! [[ "${MOOMOO_ACC_ID}" =~ ^[0-9]{1,19}$ ]]; then
+  echo "[config] ERROR: MOOMOO_ACC_ID must be a numeric account id (1-19 digits), got '${MOOMOO_ACC_ID}' — fix the launchd plist / env and restart" >&2
   exit "${EX_CONFIG}"
 fi
 
@@ -335,6 +338,18 @@ if [ "${BRIDGE_NEEDS_START}" = "true" ]; then
   BRIDGE_PID=$!
   if ! _wait_for_bridge_health "${BRIDGE_PORT}" 30; then
     echo "[bridge] Failed to start. Check ${BRIDGE_SCRIPT} and OpenD."
+    # If the child already exited, surface its code: 78 (EX_CONFIG) means the
+    # config itself is bad and the watchdog must not retry; anything else is
+    # transient and stays exit 1. An exited-but-unreaped background child is a
+    # zombie, and kill -0 still succeeds on zombies — so also match a Z state.
+    if ! kill -0 "${BRIDGE_PID}" 2>/dev/null || [[ "$(ps -p "${BRIDGE_PID}" -o state= 2>/dev/null)" =~ Z ]]; then
+      _child_rc=0
+      wait "${BRIDGE_PID}" || _child_rc=$?
+      if [ "${_child_rc}" -eq "${EX_CONFIG}" ]; then
+        echo "[bridge] Bridge exited ${EX_CONFIG} (configuration error) — not retryable"
+        exit "${EX_CONFIG}"
+      fi
+    fi
     kill -KILL "${BRIDGE_PID}" 2>/dev/null || true
     exit 1
   fi
