@@ -21,10 +21,16 @@
     <key>Label</key>
     <string>com.magi.bridge</string>
 
+    <!-- Run the watchdog, not start-bridge.sh directly: the daemon maps
+         exit 78 (EX_CONFIG, e.g. a malformed MOOMOO_ACC_ID) to a clean exit
+         so launchd's KeepAlive does not restart-loop on a permanent config
+         error. Transient failures are retried inside the daemon.
+         (Matches the deployed TIALA plist, which wraps this same script
+         after sourcing ~/.config/magi-moomoo/bridge.env.) -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>scripts/start-bridge.sh</string>
+        <string>scripts/start-bridge-daemon.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
