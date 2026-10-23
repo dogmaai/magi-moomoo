@@ -27,12 +27,15 @@ header automatically when OLLAMA_AUTH_TOKEN is set (src/llm.js).
 
 import hmac
 import http.server
+import itertools
 import json
 import os
 import socketserver
 import sys
+import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 AUTH_TOKEN = os.environ.get("OLLAMA_AUTH_TOKEN", "")
 BIND = os.environ.get("OLLAMA_PROXY_BIND", "127.0.0.1")
@@ -53,6 +56,13 @@ DROP_RESPONSE_HEADERS = {
 UPSTREAM_TIMEOUT_SEC = 600  # local inference can take minutes
 CHUNK = 64 * 1024
 
+_req_counter = itertools.count(1)
+
+
+def _log(msg):
+    sys.stderr.write("[ollama-auth-proxy] %s %s\n"
+                     % (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), msg))
+
 
 def _bearer_token(headers):
     auth = headers.get("Authorization", "")
@@ -69,7 +79,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         token = _bearer_token(self.headers)
         return token is not None and hmac.compare_digest(token, AUTH_TOKEN)
 
-    def _reject(self):
+    def _reject(self, req_no=None):
         # Drain any request body so it cannot poison the next request on a
         # keep-alive connection (an unconsumed POST body would be parsed as
         # the start of the next request line), then close — a rejected
@@ -78,6 +88,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
         self.close_connection = True
+        if req_no is not None:
+            _log("req=%d %s %s -> 401 rejected" % (req_no, self.command, self.path))
         body = json.dumps({"error": "unauthorized"}).encode()
         self.send_response(401)
         self.send_header("Content-Type", "application/json")
@@ -88,15 +100,26 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _proxy(self):
+        req_no = next(_req_counter)
+        t0 = time.monotonic()
+        # Responses are close-delimited: upstream Transfer-Encoding is
+        # stripped and streamed (SSE) bodies carry no Content-Length, so
+        # closing the connection is the only correct HTTP/1.1 way to mark
+        # the end of the response. Keep-alive used to leave every streamed
+        # response open — cloudflared could not complete the tunnel stream,
+        # and the edge killed it ~100s after the last byte, surfacing to
+        # magi-core as "Premature close" on 100% of Ollama calls.
+        self.close_connection = True
         # Liveness: Ollama's own "Ollama is running" banner stays public so
         # tunnel/health checks work without a token. Everything else is gated.
         if not (self.command == "GET" and self.path == "/"):
             if not self._authorized():
-                self._reject()
+                self._reject(req_no)
                 return
 
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
+        _log("req=%d %s %s body_bytes=%d" % (req_no, self.command, self.path, length))
 
         req = urllib.request.Request(
             TARGET + self.path, data=body, method=self.command,
@@ -115,44 +138,64 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type",
                              e.headers.get("Content-Type", "application/json"))
             self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(payload)
+            _log("req=%d upstream_status=%d bytes=%d elapsed_s=%.3f"
+                 % (req_no, e.code, len(payload), time.monotonic() - t0))
             return
         except Exception as e:
             payload = json.dumps({"error": f"upstream unreachable: {e}"}).encode()
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(payload)
+            _log("req=%d result=upstream_error error=%s elapsed_s=%.3f"
+                 % (req_no, type(e).__name__, time.monotonic() - t0))
             return
 
-        self.send_response(resp.status)
-        for k, v in resp.headers.items():
-            if k.lower() not in DROP_RESPONSE_HEADERS:
-                self.send_header(k, v)
-        self.end_headers()
+        ttfb = time.monotonic() - t0
+        _log("req=%d upstream_status=%d ttfb_s=%.3f"
+             % (req_no, resp.status, ttfb))
+        try:
+            self.send_response(resp.status)
+            for k, v in resp.headers.items():
+                if k.lower() not in DROP_RESPONSE_HEADERS:
+                    self.send_header(k, v)
+            self.send_header("Connection", "close")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            resp.close()
+            _log("req=%d result=downstream_disconnect bytes=0 elapsed_s=%.3f"
+                 % (req_no, time.monotonic() - t0))
+            return
         # Stream the body — Ollama SSE/NDJSON responses must reach the client
         # incrementally so Cloudflare's ~100 s proxy timeout never trips and
         # magi-core's readOllamaStream sees tokens as they are produced.
+        nbytes = 0
+        outcome = "completed"
         try:
             while True:
                 chunk = resp.read(CHUNK)
                 if not chunk:
                     break
+                nbytes += len(chunk)
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            pass
+            outcome = "downstream_disconnect"
         finally:
             resp.close()
+        _log("req=%d result=%s bytes=%d elapsed_s=%.3f"
+             % (req_no, outcome, nbytes, time.monotonic() - t0))
 
     do_GET = do_POST = do_PUT = do_DELETE = do_HEAD = _proxy
 
     def log_message(self, fmt, *args):
         # Method+path only — never log headers (would leak the bearer token).
-        sys.stderr.write("[ollama-auth-proxy] %s %s -> %s\n"
-                         % (self.command, self.path, args[0] if args else ""))
+        _log("%s %s -> %s" % (self.command, self.path, args[0] if args else ""))
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
