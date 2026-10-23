@@ -19,6 +19,18 @@ Environment:
     OLLAMA_PROXY_BIND    Listen address (default 127.0.0.1)
     OLLAMA_PROXY_PORT    Listen port (default 11437)
     OLLAMA_TARGET        Upstream base URL (default http://127.0.0.1:11434)
+    OLLAMA_PROXY_LOG_FILE        Request log path
+                                 (default ~/Library/Logs/ollama-auth-proxy.log)
+    OLLAMA_PROXY_LOG_MAX_BYTES   Rotate when the log exceeds this many bytes
+                                 (default 1048576)
+    OLLAMA_PROXY_LOG_BACKUPS     Rotated generations to keep (default 3)
+
+Logging: request/timing lines go to a RotatingFileHandler under a persistent
+user log directory — not /tmp, which is wiped on reboot and cannot keep
+incident evidence. Rotation is handled in-process because newsyslog-style
+rename rotation does not work with a process that holds the file open. If the
+log file cannot be opened, logging falls back to stderr so a service manager
+still captures it.
 
 The TIALA LaunchAgent loads the token from ~/.config/magi-moomoo/ollama.env
 (source of truth: GCP Secret Manager `OLLAMA_AUTH_TOKEN`). magi-core sends the
@@ -29,6 +41,7 @@ import hmac
 import http.server
 import itertools
 import json
+import logging
 import os
 import socketserver
 import sys
@@ -36,11 +49,17 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 
 AUTH_TOKEN = os.environ.get("OLLAMA_AUTH_TOKEN", "")
 BIND = os.environ.get("OLLAMA_PROXY_BIND", "127.0.0.1")
 PORT = int(os.environ.get("OLLAMA_PROXY_PORT", "11437"))
 TARGET = os.environ.get("OLLAMA_TARGET", "http://127.0.0.1:11434").rstrip("/")
+LOG_FILE = os.path.expanduser(
+    os.environ.get("OLLAMA_PROXY_LOG_FILE",
+                   "~/Library/Logs/ollama-auth-proxy.log"))
+LOG_MAX_BYTES = int(os.environ.get("OLLAMA_PROXY_LOG_MAX_BYTES", "1048576"))
+LOG_BACKUPS = int(os.environ.get("OLLAMA_PROXY_LOG_BACKUPS", "3"))
 
 # Hop-by-hop headers must not be forwarded (RFC 7230 §6.1), plus headers we
 # deliberately override when talking to Ollama.
@@ -59,9 +78,35 @@ CHUNK = 64 * 1024
 _req_counter = itertools.count(1)
 
 
+class _UtcIsoFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        return datetime.fromtimestamp(record.created, timezone.utc) \
+                       .isoformat(timespec="milliseconds")
+
+
+def _make_log_handler():
+    try:
+        log_dir = os.path.dirname(LOG_FILE)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        return RotatingFileHandler(LOG_FILE, maxBytes=LOG_MAX_BYTES,
+                                   backupCount=LOG_BACKUPS, encoding="utf-8")
+    except OSError as e:
+        sys.stderr.write("[ollama-auth-proxy] WARN: cannot open log file "
+                         "%s (%s) — falling back to stderr\n" % (LOG_FILE, e))
+        return logging.StreamHandler(sys.stderr)
+
+
+_handler = _make_log_handler()
+_handler.setFormatter(_UtcIsoFormatter("[ollama-auth-proxy] %(asctime)s %(message)s"))
+_LOG = logging.getLogger("ollama-auth-proxy")
+_LOG.setLevel(logging.INFO)
+_LOG.propagate = False
+_LOG.addHandler(_handler)
+
+
 def _log(msg):
-    sys.stderr.write("[ollama-auth-proxy] %s %s\n"
-                     % (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), msg))
+    _LOG.info(msg)
 
 
 def _bearer_token(headers):
@@ -211,4 +256,6 @@ if not AUTH_TOKEN:
 
 print(f"[ollama-auth-proxy] listening on {BIND}:{PORT} -> {TARGET} "
       "(bearer auth required)")
+_log("listening on %s:%d -> %s (bearer auth required) log_file=%s"
+     % (BIND, PORT, TARGET, LOG_FILE))
 ThreadingHTTPServer((BIND, PORT), ProxyHandler).serve_forever()
