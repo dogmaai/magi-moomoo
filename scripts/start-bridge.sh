@@ -47,9 +47,9 @@ fi
 #
 # GRAFANA_OTLP_TOKEN is the ONLY sanctioned credential for OTLP export. It must
 # be a Grafana Cloud Access Policy token with metrics:write + traces:write +
-# logs:write. Pyroscope uses the separately supplied PYROSCOPE_SERVER_ADDRESS,
+# logs:write. Pyroscope uses the PYROSCOPE_SERVER_ADDRESS,
 # PYROSCOPE_BASIC_AUTH_USER, and PYROSCOPE_BASIC_AUTH_PASSWORD environment
-# variables; credentials must come from the host's secret mechanism.
+# variables, falling back to built-in defaults (see below).
 # Source of truth is GCP Secret Manager (screen-share-459802 / GRAFANA_OTLP_TOKEN);
 # an env var copy is accepted first only as a convenience and can go stale.
 #   1. GRAFANA_OTLP_TOKEN env var
@@ -174,33 +174,14 @@ else
 fi
 
 # Pyroscope (Grafana Cloud Profiles) configuration.
-# Resolution order per value: environment variable -> GCP Secret Manager ->
-# built-in default (address/user only). PYROSCOPE_BASIC_AUTH_PASSWORD falls
-# back to GRAFANA_OTLP_TOKEN so a single access-policy token can serve both
+# Resolution order per value: environment variable -> built-in default
+# (address/user only). PYROSCOPE_BASIC_AUTH_PASSWORD falls back to
+# GRAFANA_OTLP_TOKEN so a single access-policy token can serve both
 # pipelines — that token needs the profiles:write scope for profile data to
-# be accepted.
-if [ -z "${PYROSCOPE_SERVER_ADDRESS}" ] && command -v gcloud >/dev/null 2>&1; then
-  PYROSCOPE_SERVER_ADDRESS="$(gcloud secrets versions access latest --secret=PYROSCOPE_SERVER_ADDRESS --project=screen-share-459802 2>/dev/null || true)"
-  if [ -n "${PYROSCOPE_SERVER_ADDRESS}" ]; then
-    echo "[pyroscope] Fetched PYROSCOPE_SERVER_ADDRESS from Secret Manager"
-  fi
-fi
+# be accepted. (These names never existed in Secret Manager; the reads were
+# removed 2026-10-23.)
 PYROSCOPE_SERVER_ADDRESS="${PYROSCOPE_SERVER_ADDRESS:-https://profiles-prod-019.grafana.net}"
-
-if [ -z "${PYROSCOPE_BASIC_AUTH_USER}" ] && command -v gcloud >/dev/null 2>&1; then
-  PYROSCOPE_BASIC_AUTH_USER="$(gcloud secrets versions access latest --secret=PYROSCOPE_BASIC_AUTH_USER --project=screen-share-459802 2>/dev/null || true)"
-  if [ -n "${PYROSCOPE_BASIC_AUTH_USER}" ]; then
-    echo "[pyroscope] Fetched PYROSCOPE_BASIC_AUTH_USER from Secret Manager"
-  fi
-fi
 PYROSCOPE_BASIC_AUTH_USER="${PYROSCOPE_BASIC_AUTH_USER:-${GRAFANA_INSTANCE_ID:-1557976}}"
-
-if [ -z "${PYROSCOPE_BASIC_AUTH_PASSWORD}" ] && command -v gcloud >/dev/null 2>&1; then
-  PYROSCOPE_BASIC_AUTH_PASSWORD="$(gcloud secrets versions access latest --secret=PYROSCOPE_BASIC_AUTH_PASSWORD --project=screen-share-459802 2>/dev/null || true)"
-  if [ -n "${PYROSCOPE_BASIC_AUTH_PASSWORD}" ]; then
-    echo "[pyroscope] Fetched PYROSCOPE_BASIC_AUTH_PASSWORD from Secret Manager"
-  fi
-fi
 PYROSCOPE_BASIC_AUTH_PASSWORD="${PYROSCOPE_BASIC_AUTH_PASSWORD:-${GRAFANA_OTLP_TOKEN:-}}"
 
 export PYROSCOPE_SERVER_ADDRESS PYROSCOPE_BASIC_AUTH_USER
