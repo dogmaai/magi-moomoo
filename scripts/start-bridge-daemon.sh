@@ -37,11 +37,20 @@ log() {
 # invisible to the watchdog.
 #   - named tunnel: `cloudflared tunnel --config ~/.cloudflared/config-<name>.yml run <name>`
 #   - quick tunnel: `cloudflared tunnel --url http://localhost:11436`
+# Both patterns are anchored to the exact command line start-bridge.sh
+# spawns, and regex metacharacters in the tunnel name are escaped, so that
+#   - a sibling tunnel whose name merely *contains* this one (e.g.
+#     `<name>-yml`) is never matched (and never killed by restart_bridge)
+#   - unrelated processes whose arguments contain the pattern text
+#     (`tail`, `grep`, editors) cannot mask a dead tunnel
+# If the spawn form in start-bridge.sh changes, update these together.
 tunnel_pattern() {
   if [ -n "${CLOUDFLARE_TUNNEL_NAME:-}" ]; then
-    echo "cloudflared.*config-${CLOUDFLARE_TUNNEL_NAME}.yml.*run"
+    local name
+    name=$(printf '%s' "${CLOUDFLARE_TUNNEL_NAME}" | sed 's/[][\.*^$+?(){}|\\]/\\&/g')
+    echo "^[^ ]*cloudflared tunnel --config [^ ]*/config-${name}\\.yml run ${name}\$"
   else
-    echo "cloudflared.*tunnel.*--url.*:11436"
+    echo "^[^ ]*cloudflared tunnel --url [^ ]*:11436\$"
   fi
 }
 
