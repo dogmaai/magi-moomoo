@@ -6,8 +6,10 @@
 #   nohup bash scripts/start-bridge-daemon.sh >/tmp/moomoo-bridge-daemon.log 2>&1 &
 #
 # This script keeps start-bridge.sh alive. Every INTERVAL seconds it checks
-# the local bridge /health endpoint and the cloudflared process. After MAX_FAIL
-# consecutive failures it kills the bridge + quick tunnel and re-runs start-bridge.sh.
+# the local bridge /health endpoint and the bridge's own tunnel process
+# (named tunnel when CLOUDFLARE_TUNNEL_NAME is set, otherwise the quick
+# tunnel). After MAX_FAIL consecutive failures it kills the bridge + its
+# tunnel and re-runs start-bridge.sh, which respawns both.
 #
 # Recommended long-term fix: switch to a Cloudflare Named Tunnel
 # (scripts/setup-named-tunnel.sh) so the URL is persistent and cloudflared
@@ -29,7 +31,21 @@ log() {
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
 }
 
-# Check whether the local bridge and the cloudflared process are alive.
+# The pgrep pattern matching ONLY the tunnel that serves this bridge.
+# A bare `pgrep -x cloudflared` is wrong on hosts running multiple
+# cloudflared tunnels: an unrelated tunnel keeps a dead bridge tunnel
+# invisible to the watchdog.
+#   - named tunnel: `cloudflared tunnel --config ~/.cloudflared/config-<name>.yml run <name>`
+#   - quick tunnel: `cloudflared tunnel --url http://localhost:11436`
+tunnel_pattern() {
+  if [ -n "${CLOUDFLARE_TUNNEL_NAME:-}" ]; then
+    echo "cloudflared.*config-${CLOUDFLARE_TUNNEL_NAME}.yml.*run"
+  else
+    echo "cloudflared.*tunnel.*--url.*:11436"
+  fi
+}
+
+# Check whether the local bridge and its own tunnel process are alive.
 # TIALA often cannot curl its own public tunnel URL due to hairpin NAT,
 # so use local health checks instead of an external reachability test.
 check_bridge_alive() {
@@ -37,8 +53,12 @@ check_bridge_alive() {
     log "Local bridge /health is not responding"
     return 1
   fi
-  if ! pgrep -x cloudflared >/dev/null 2>&1; then
-    log "cloudflared process is not running"
+  if ! pgrep -f "$(tunnel_pattern)" >/dev/null 2>&1; then
+    if [ -n "${CLOUDFLARE_TUNNEL_NAME:-}" ]; then
+      log "Bridge tunnel '${CLOUDFLARE_TUNNEL_NAME}' process is not running"
+    else
+      log "Bridge quick-tunnel process is not running"
+    fi
     return 1
   fi
   return 0
@@ -49,12 +69,15 @@ restart_bridge() {
   log "Restarting bridge/tunnel..."
   pkill -f "moomoo_bridge.py" 2>/dev/null || true
 
-  # Kill quick-tunnel cloudflared processes pointing at the bridge port.
-  # Named tunnels are left alone; this script is primarily for quick-tunnel recovery.
+  # Kill the bridge's own tunnel so start-bridge.sh respawns it.
+  # - quick tunnels match `--url ...:11436` (stale ones can create
+  #   conflicting URLs)
+  # - named tunnels match their config file; start-bridge.sh skips a
+  #   running named tunnel, so a dead-but-present process must be removed
   local pids
-  pids=$(pgrep -f "cloudflared.*tunnel.*--url.*:11436" 2>/dev/null || true)
+  pids=$(pgrep -f "$(tunnel_pattern)" 2>/dev/null || true)
   if [ -n "${pids}" ]; then
-    log "Stopping stale quick tunnel PIDs: ${pids}"
+    log "Stopping bridge tunnel PIDs: ${pids}"
     kill -TERM ${pids} 2>/dev/null || true
     sleep 2
     kill -KILL ${pids} 2>/dev/null || true
