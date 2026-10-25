@@ -5,7 +5,7 @@
   "main": "bootstrap.js",
   "scripts": {
     "start": "node bootstrap.js",
-    "test": "bash test/run-proxy-cache-tests.sh",
+    "test": "bash test/tunnel-pattern-test.sh && bash test/run-proxy-cache-tests.sh",
     "lint": "node --check server.js && python3 -m py_compile bridge/moomoo_bridge.py"
   },
   "dependencies": {

@@ -27,6 +27,11 @@ BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TUNNEL_MODE="${1:-cloudflared}"
 
+# Shared pgrep patterns for this bridge's tunnel — the same definition the
+# watchdog (start-bridge-daemon.sh) uses, anchored to the spawn forms below.
+# shellcheck source=lib/tunnel-pattern.sh
+. "${SCRIPT_DIR}/lib/tunnel-pattern.sh"
+
 # Exit code used for configuration errors. The watchdog daemon
 # (start-bridge-daemon.sh) treats 78 (EX_CONFIG) as non-retryable and stops
 # the restart loop; transient failures keep any other exit code.
@@ -197,7 +202,7 @@ fi
 # and can prevent the new tunnel from establishing.
 _cleanup_quick_tunnels() {
   local pids
-  pids=$(pgrep -f "cloudflared.*tunnel.*--url.*:${BRIDGE_PORT}" 2>/dev/null || true)
+  pids=$(pgrep -f "$(quick_tunnel_pattern "${BRIDGE_PORT}")" 2>/dev/null || true)
   if [ -n "${pids}" ]; then
     echo "[cloudflared] Stopping stale quick tunnel PIDs: ${pids}"
     kill -TERM ${pids} 2>/dev/null || true
@@ -378,7 +383,7 @@ elif [ -n "${CLOUDFLARE_TUNNEL_NAME}" ]; then
   TUNNEL_URL="${CLOUDFLARE_TUNNEL_URL}"
 
   # Check if named tunnel is already running
-  if pgrep -f "cloudflared.*tunnel.*run.*${CLOUDFLARE_TUNNEL_NAME}" >/dev/null 2>&1; then
+  if pgrep -f "$(named_tunnel_pattern "${CLOUDFLARE_TUNNEL_NAME}")" >/dev/null 2>&1; then
     echo "[cloudflared] Named tunnel '${CLOUDFLARE_TUNNEL_NAME}' already running"
   else
     echo "[cloudflared] Starting named tunnel '${CLOUDFLARE_TUNNEL_NAME}'..."
