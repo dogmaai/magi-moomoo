@@ -95,7 +95,7 @@ fi
 
 # --- 6. LaunchAgent -----------------------------------------------------------
 mkdir -p "${HOME}/Library/LaunchAgents"
-sed -e "s|@HOME@|${HOME}|g" "${REPO_DIR}/scripts/${PLIST_NAME}.plist" > "$PLIST_DST"
+sed -e "s|@HOME@|${HOME}|g" -e "s|@REPO_DIR@|${REPO_DIR}|g" "${REPO_DIR}/scripts/${PLIST_NAME}.plist" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 echo "[install-alloy] loaded ${PLIST_DST}"
