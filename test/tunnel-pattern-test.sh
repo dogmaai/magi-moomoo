@@ -27,8 +27,10 @@ expect() {
   [ "$got" = "$exp" ] && ok "$label" || bad "$label (got=$got exp=$exp)"
 }
 
-NAME=magi-bridge
-PORT=11436
+# A unique, non-existent tunnel name so §4 stays at zero matches even on a
+# host where the real bridge tunnel is running. Port likewise non-default.
+NAME="tp-test-$$"
+PORT=19436
 NAMED=$(named_tunnel_pattern "$NAME")
 QUICK=$(quick_tunnel_pattern "$PORT")
 
@@ -77,7 +79,7 @@ expect 0 "decoy: grep with the text"            "$NAMED" "grep -f cloudflared tu
 expect 0 "quick tunnel does not satisfy named"  "$NAMED" "cloudflared tunnel --url http://localhost:$PORT"
 
 expect 1 "real quick tunnel"                    "$QUICK" "cloudflared tunnel --url http://localhost:$PORT"
-expect 0 "quick tunnel on another port"         "$QUICK" "cloudflared tunnel --url http://localhost:11437"
+expect 0 "quick tunnel on another port"         "$QUICK" "cloudflared tunnel --url http://localhost:$((PORT+1))"
 expect 0 "named tunnel does not satisfy quick"  "$QUICK" "cloudflared tunnel --config /x/config-other.yml run other"
 expect 0 "decoy: grep with quick text"          "$QUICK" "grep cloudflared tunnel --url http://localhost:$PORT"
 

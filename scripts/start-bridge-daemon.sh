@@ -25,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 INTERVAL="${INTERVAL:-60}"
 MAX_FAIL="${MAX_FAIL:-2}"
+# Fixed value, duplicated in start-bridge.sh — change both together.
 BRIDGE_PORT=11436
 FAIL_COUNT=0
 

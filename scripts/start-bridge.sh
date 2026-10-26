@@ -22,6 +22,8 @@
 
 set -e
 
+# Fixed value, duplicated in start-bridge-daemon.sh — change both together
+# (the watchdog derives its health URL and tunnel pattern from it).
 BRIDGE_PORT=11436
 BRIDGE_SCRIPT="${BRIDGE_SCRIPT:-bridge/moomoo_bridge.py}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
