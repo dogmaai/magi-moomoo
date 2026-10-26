@@ -25,31 +25,32 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 INTERVAL="${INTERVAL:-60}"
 MAX_FAIL="${MAX_FAIL:-2}"
+# Fixed value, duplicated in start-bridge.sh — change both together.
+BRIDGE_PORT=11436
 FAIL_COUNT=0
+
+# Shared pgrep patterns for the bridge's own tunnel (same definition that
+# start-bridge.sh uses when it spawns / looks for the tunnel). A bare
+# `pgrep -x cloudflared` is wrong on hosts running multiple cloudflared
+# tunnels: an unrelated tunnel keeps a dead bridge tunnel invisible.
+# shellcheck source=lib/tunnel-pattern.sh
+. "${SCRIPT_DIR}/lib/tunnel-pattern.sh"
 
 log() {
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"
 }
 
-# The pgrep pattern matching ONLY the tunnel that serves this bridge.
-# A bare `pgrep -x cloudflared` is wrong on hosts running multiple
-# cloudflared tunnels: an unrelated tunnel keeps a dead bridge tunnel
-# invisible to the watchdog.
-#   - named tunnel: `cloudflared tunnel --config ~/.cloudflared/config-<name>.yml run <name>`
-#   - quick tunnel: `cloudflared tunnel --url http://localhost:11436`
+# The pattern matching ONLY the tunnel that serves this bridge:
+# named tunnel when CLOUDFLARE_TUNNEL_NAME is set, otherwise the quick tunnel.
 tunnel_pattern() {
-  if [ -n "${CLOUDFLARE_TUNNEL_NAME:-}" ]; then
-    echo "cloudflared.*config-${CLOUDFLARE_TUNNEL_NAME}.yml.*run"
-  else
-    echo "cloudflared.*tunnel.*--url.*:11436"
-  fi
+  bridge_tunnel_pattern "${CLOUDFLARE_TUNNEL_NAME:-}" "${BRIDGE_PORT}"
 }
 
 # Check whether the local bridge and its own tunnel process are alive.
 # TIALA often cannot curl its own public tunnel URL due to hairpin NAT,
 # so use local health checks instead of an external reachability test.
 check_bridge_alive() {
-  if ! curl -sf --max-time 5 "http://localhost:11436/health" >/dev/null 2>&1; then
+  if ! curl -sf --max-time 5 "http://localhost:${BRIDGE_PORT}/health" >/dev/null 2>&1; then
     log "Local bridge /health is not responding"
     return 1
   fi
@@ -70,7 +71,7 @@ restart_bridge() {
   pkill -f "moomoo_bridge.py" 2>/dev/null || true
 
   # Kill the bridge's own tunnel so start-bridge.sh respawns it.
-  # - quick tunnels match `--url ...:11436` (stale ones can create
+  # - quick tunnels match `--url ...:<port>` (stale ones can create
   #   conflicting URLs)
   # - named tunnels match their config file; start-bridge.sh skips a
   #   running named tunnel, so a dead-but-present process must be removed
