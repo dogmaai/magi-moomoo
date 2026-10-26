@@ -83,16 +83,19 @@ cp "${REPO_DIR}/scripts/alloy/config.alloy" "$ALLOY_ETC/config.alloy"
 echo "[install-alloy] installed ${ALLOY_ETC}/config.env + config.alloy"
 
 # --- 5. newsyslog rotation (system dir needs root) ----------------------------
-if sudo -n install -m 644 "$NEWSYSLOG_SRC" "$NEWSYSLOG_DST" 2>/dev/null; then
+mkdir -p "${HOME}/Library/Logs"
+NEWSYSLOG_RENDERED="${HOME}/Library/Logs/magi-alloy.newsyslog.rendered"
+sed -e "s|@HOME@|${HOME}|g" -e "s|@USER@|$(id -un)|g" "$NEWSYSLOG_SRC" > "$NEWSYSLOG_RENDERED"
+if sudo -n install -m 644 "$NEWSYSLOG_RENDERED" "$NEWSYSLOG_DST" 2>/dev/null; then
   echo "[install-alloy] installed ${NEWSYSLOG_DST}"
 else
   echo "[install-alloy] newsyslog entry NOT installed (needs sudo):"
-  echo "    sudo install -m 644 '${NEWSYSLOG_SRC}' '${NEWSYSLOG_DST}'"
+  echo "    sudo install -m 644 '${NEWSYSLOG_RENDERED}' '${NEWSYSLOG_DST}'"
 fi
 
 # --- 6. LaunchAgent -----------------------------------------------------------
-mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
-cp "${REPO_DIR}/scripts/${PLIST_NAME}.plist" "$PLIST_DST"
+mkdir -p "${HOME}/Library/LaunchAgents"
+sed -e "s|@HOME@|${HOME}|g" "${REPO_DIR}/scripts/${PLIST_NAME}.plist" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 echo "[install-alloy] loaded ${PLIST_DST}"
