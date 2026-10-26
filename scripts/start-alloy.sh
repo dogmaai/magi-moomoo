@@ -1,64 +1,37 @@
 #!/bin/bash
-# start-alloy.sh — Launch wrapper for Grafana Alloy on TIALA (com.magi.alloy).
+# start-alloy.sh — LaunchAgent entry point for the TIALA Grafana Alloy agent.
 #
-# Sources the host-local env file (never checked in) and execs `alloy run`
-# on the repo config. Nothing credential- or host-specific lives in this
-# repo — the env file holds the token, the Hosted Metrics instance ID,
-# and the scrape target.
+# Runs the Homebrew-packaged alloy-wrapper, which sources
+# /opt/homebrew/etc/alloy/config.env (a shim that pulls in
+# ~/.config/magi-moomoo/alloy.env, mode 600) and then `alloy run`s
+# /opt/homebrew/etc/alloy/config.alloy.
 #
-# Env file:   ${ALLOY_ENV_FILE:-~/.config/magi-moomoo/alloy.env}   (mode 600)
-# Config:     scripts/alloy/config.alloy
-# Storage:    ${ALLOY_STORAGE_PATH:-~/Library/Application Support/magi-alloy}
-# Binary:     ${ALLOY_BIN:-alloy on PATH}
+# Config problems exit 0 on purpose: launchd KeepAlive{SuccessfulExit=false}
+# treats exit 0 as a clean stop and does NOT restart-loop, so a missing env
+# file quietly leaves the agent down instead of thrashing. The companion
+# alerts (Alloy metrics stale / disk usage) cover the "agent silently down"
+# case — see magi-core's provisioning.
 #
-# Config problems exit 0 on purpose: launchd KeepAlive{SuccessfulExit:false}
-# treats a nonzero exit as restartable, so a permanent configuration error
-# (missing env file / missing vars) must exit cleanly to avoid a restart
-# loop — same intent as the bridge's EX_CONFIG mapping.
+# Writes its own PID to ~/Library/Logs/magi-alloy.pid so newsyslog can
+# SIGTERM the agent after rotating the log (KeepAlive restarts it and the
+# new process reopens the fresh log file — see magi-alloy.newsyslog.conf).
 
 set -u
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+ALLOY_WRAPPER="${ALLOY_WRAPPER:-/opt/homebrew/opt/alloy/bin/alloy-wrapper}"
+ALLOY_ENV_FILE="${ALLOY_ENV_FILE:-$HOME/.config/magi-moomoo/alloy.env}"
+CONFIG_ENV="/opt/homebrew/etc/alloy/config.env"
+PID_FILE="${ALLOY_PID_FILE:-$HOME/Library/Logs/magi-alloy.pid}"
 
-ENV_FILE="${ALLOY_ENV_FILE:-${HOME}/.config/magi-moomoo/alloy.env}"
-STORAGE_PATH="${ALLOY_STORAGE_PATH:-${HOME}/Library/Application Support/magi-alloy}"
-
-if [ ! -f "${ENV_FILE}" ]; then
-  log "FATAL: env file ${ENV_FILE} not found — run scripts/install-alloy-launchagent.sh first"
-  exit 0
+if [ ! -x "$ALLOY_WRAPPER" ]; then
+	echo "[start-alloy] $ALLOY_WRAPPER not found; run scripts/install-alloy-launchagent.sh (brew tap grafana/grafana && brew install grafana/grafana/alloy)"
+	exit 0
 fi
-# shellcheck source=/dev/null
-. "${ENV_FILE}"
 
 missing=0
-for v in GRAFANA_ALLOY_REMOTE_WRITE_TOKEN PROM_REMOTE_WRITE_URL \
-         PROM_REMOTE_WRITE_USERNAME ALLOY_SCRAPE_ADDRESS \
-         ALLOY_SCRAPE_METRICS_PATH; do
-  eval "val=\${${v}:-}"
-  if [ -z "${val}" ]; then
-    log "FATAL: ${v} is unset in ${ENV_FILE}"
-    missing=1
-  fi
-done
-if [ "${missing}" -eq 1 ]; then
-  exit 0
-fi
+[ -f "$CONFIG_ENV" ] || { echo "[start-alloy] $CONFIG_ENV missing"; missing=1; }
+[ -f "$ALLOY_ENV_FILE" ] || { echo "[start-alloy] $ALLOY_ENV_FILE missing"; missing=1; }
+[ "$missing" -eq 0 ] || exit 0
 
-ALLOY_BIN="${ALLOY_BIN:-alloy}"
-if ! command -v "${ALLOY_BIN}" >/dev/null 2>&1; then
-  log "FATAL: ${ALLOY_BIN} not found on PATH=${PATH}"
-  exit 0
-fi
-
-CONFIG="${ALLOY_CONFIG:-$(cd "$(dirname "$0")" && pwd)/alloy/config.alloy}"
-if [ ! -f "${CONFIG}" ]; then
-  log "FATAL: config not found at ${CONFIG}"
-  exit 0
-fi
-
-mkdir -p "${STORAGE_PATH}"
-
-log "starting alloy (config=${CONFIG}, storage=${STORAGE_PATH})"
-exec "${ALLOY_BIN}" run "${CONFIG}" \
-  --storage.path "${STORAGE_PATH}" \
-  --disable-reporting
+echo $$ > "$PID_FILE"
+exec "$ALLOY_WRAPPER"

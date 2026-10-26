@@ -1,146 +1,99 @@
 #!/bin/bash
-# install-alloy-launchagent.sh — Install Grafana Alloy + LaunchAgent on TIALA.
+# install-alloy-launchagent.sh — Install the TIALA Grafana Alloy host-metrics
+# agent (prometheus.exporter.unix -> grafanacloud-aka-prom, magi-core#667).
 #
 # What it does:
-#   1. Downloads a pinned Grafana Alloy binary (grafana/alloy GitHub
-#      release, darwin build matching `uname -m`) and verifies it against
-#      the release checksums. Grafana Alloy is NOT on Homebrew — the cask
-#      named `alloy` is an unrelated modelling tool.
-#   2. Fetches GRAFANA_ALLOY_REMOTE_WRITE_TOKEN from GCP Secret Manager
-#      and writes ~/.config/magi-moomoo/alloy.env (mode 600) holding the
-#      token, the remote-write endpoint/user, and the scrape target.
-#   3. Installs and loads com.magi.alloy.plist.
+#   1. brew tap grafana/grafana && brew install grafana/grafana/alloy && brew pin alloy
+#   2. Fetch GRAFANA_ALLOY_REMOTE_WRITE_TOKEN from GCP Secret Manager
+#   3. Write ~/.config/magi-moomoo/alloy.env (mode 600) — the credential file
+#   4. Install /opt/homebrew/etc/alloy/{config.alloy,config.env} for the brew
+#      wrapper (config.env is a shim that sources alloy.env)
+#   5. Install the newsyslog rotation entry (needs sudo; prints the command
+#      if sudo -n is unavailable)
+#   6. Install + load ~/Library/LaunchAgents/com.magi.alloy.plist
 #
 # Usage:
 #   bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>
 #
-# The instance ID is the Grafana Cloud **Hosted Metrics instance ID**
-# (Cloud Portal → stack aka → Prometheus → Details), used as the
-# remote_write basic_auth username. It is NOT the stack ID.
-#
-# Re-running the script refreshes alloy.env from GSM latest — use it for
-# token rotation (the env file is an injected copy and goes stale).
+# <hosted-metrics-instance-id> is the Prometheus "Instance ID" shown in
+# Grafana Cloud Portal -> aka -> Prometheus -> Details. It is NOT the stack
+# ID (1557976) — the stack ID is rejected with "invalid authentication
+# credentials" (see secrets-inventory.md).
 
 set -e
 
-INSTANCE_ID="${1:-${PROM_REMOTE_WRITE_USERNAME:-}}"
-if [ -z "${INSTANCE_ID}" ]; then
-  echo "[ERROR] Hosted Metrics instance ID required."
-  echo "        Usage: bash $0 <hosted-metrics-instance-id>"
-  echo "        (Grafana Cloud Portal → stack aka → Prometheus → Details → Instance ID)"
-  exit 1
-fi
-if ! [[ "${INSTANCE_ID}" =~ ^[0-9]+$ ]]; then
-  echo "[ERROR] instance ID should be numeric (got: ${INSTANCE_ID})"
-  exit 1
-fi
-
-ALLOY_VERSION="${ALLOY_VERSION:-v1.21.2}"
+INSTANCE_ID="${1:-}"
 PROJECT_ID="${GCP_PROJECT:-screen-share-459802}"
 TOKEN_SECRET="GRAFANA_ALLOY_REMOTE_WRITE_TOKEN"
-PROM_URL="${PROM_REMOTE_WRITE_URL:-https://prometheus-prod-49-prod-ap-northeast-0.grafana.net/api/prom/push}"
-ALLOY_BIN_DIR="${ALLOY_BIN_DIR:-/opt/homebrew/bin}"
-ENV_DIR="${HOME}/.config/magi-moomoo"
-ENV_FILE="${ALLOY_ENV_FILE:-${ENV_DIR}/alloy.env}"
-PLIST_NAME="com.magi.alloy"
-PLIST_SRC="scripts/com.magi.alloy.plist"
-PLIST_DST="${HOME}/Library/LaunchAgents/${PLIST_NAME}.plist"
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Scrape target: the host's metrics source (netdata). Host-specific —
-# set it here, not in the repo.
-SCRAPE_ADDRESS="${ALLOY_SCRAPE_ADDRESS:-}"
-SCRAPE_PATH="${ALLOY_SCRAPE_METRICS_PATH:-}"
-if [ -z "${SCRAPE_ADDRESS}" ] || [ -z "${SCRAPE_PATH}" ]; then
-  echo "[ERROR] set ALLOY_SCRAPE_ADDRESS and ALLOY_SCRAPE_METRICS_PATH to the"
-  echo "        host's netdata Prometheus endpoint, e.g.:"
-  echo "        ALLOY_SCRAPE_ADDRESS='127.0.0.1:<netdata-port>' \\"
-  echo "        ALLOY_SCRAPE_METRICS_PATH='/api/v1/allmetrics?format=prometheus' \\"
-  echo "        bash $0 ${INSTANCE_ID}"
-  echo "        (the actual port is recorded in the private record — magi-core#667)"
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ENV_DIR="${HOME}/.config/magi-moomoo"
+ENV_FILE="${ENV_DIR}/alloy.env"
+ALLOY_ETC="/opt/homebrew/etc/alloy"
+PLIST_NAME="com.magi.alloy"
+PLIST_DST="${HOME}/Library/LaunchAgents/${PLIST_NAME}.plist"
+NEWSYSLOG_SRC="${REPO_DIR}/scripts/alloy/magi-alloy.newsyslog.conf"
+NEWSYSLOG_DST="/etc/newsyslog.d/magi-alloy.conf"
+
+if [ -z "$INSTANCE_ID" ]; then
+  echo "Usage: bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>"
   exit 1
 fi
+case "$INSTANCE_ID" in
+  *[!0-9]*) echo "[ERROR] instance ID must be digits only (got: $INSTANCE_ID)"; exit 1 ;;
+esac
 
+# --- 1. Homebrew (official grafana/grafana tap; 'brew install alloy' from the
+#        default tap is a different tool — the Alloy modelling language) -------
+command -v brew >/dev/null 2>&1 || { echo "[ERROR] brew not found"; exit 1; }
+brew tap grafana/grafana
+brew install grafana/grafana/alloy
+brew pin alloy
+
+# --- 2. Token from GSM (same ADC/SA-key convention as install-openclaw) ------
 DEFAULT_SA_KEY="${HOME}/.config/gcloud/service-account-key.json"
 if [ -z "${GOOGLE_APPLICATION_CREDENTIALS}" ] && [ -f "${DEFAULT_SA_KEY}" ]; then
   export GOOGLE_APPLICATION_CREDENTIALS="${DEFAULT_SA_KEY}"
 fi
+command -v gcloud >/dev/null 2>&1 || { echo "[ERROR] gcloud not found"; exit 1; }
 
-if ! command -v gcloud >/dev/null 2>&1; then
-  echo "[ERROR] gcloud not found (Homebrew gcloud expected at /opt/homebrew/bin)."
-  exit 1
-fi
+echo "[install-alloy] fetching ${TOKEN_SECRET} from GSM (${PROJECT_ID})"
+TOKEN="$(gcloud secrets versions access latest --secret="${TOKEN_SECRET}" --project="${PROJECT_ID}")"
+[ -n "$TOKEN" ] || { echo "[ERROR] empty token"; exit 1; }
 
-ARCH="$(uname -m)"
-case "${ARCH}" in
-  arm64)  ALLOY_ARCH="darwin-arm64" ;;
-  x86_64) ALLOY_ARCH="darwin-amd64" ;;
-  *) echo "[ERROR] unsupported arch ${ARCH}"; exit 1 ;;
-esac
-
-echo "[Step 1] Downloading Grafana Alloy ${ALLOY_VERSION} (${ALLOY_ARCH})..."
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "${WORKDIR}"' EXIT
-BASE="https://github.com/grafana/alloy/releases/download/${ALLOY_VERSION}"
-curl -fsSL "${BASE}/alloy-${ALLOY_ARCH}.zip" -o "${WORKDIR}/alloy.zip"
-curl -fsSL "${BASE}/checksums.txt" -o "${WORKDIR}/checksums.txt"
-EXPECTED="$(grep "alloy-${ALLOY_ARCH}.zip" "${WORKDIR}/checksums.txt" | awk '{print $1}')"
-ACTUAL="$(shasum -a 256 "${WORKDIR}/alloy.zip" | awk '{print $1}')"
-if [ -z "${EXPECTED}" ] || [ "${EXPECTED}" != "${ACTUAL}" ]; then
-  echo "[ERROR] checksum mismatch (expected=${EXPECTED} actual=${ACTUAL})"
-  exit 1
-fi
-unzip -o -q "${WORKDIR}/alloy.zip" -d "${WORKDIR}"
-cp "${WORKDIR}/alloy-${ALLOY_ARCH}" "${ALLOY_BIN_DIR}/alloy"
-chmod 755 "${ALLOY_BIN_DIR}/alloy"
-xattr -d com.apple.quarantine "${ALLOY_BIN_DIR}/alloy" 2>/dev/null || true
-echo "  installed: ${ALLOY_BIN_DIR}/alloy"
-
-echo "[Step 2] Fetching ${TOKEN_SECRET} from Secret Manager..."
-TOKEN="$(gcloud secrets versions access latest --secret="${TOKEN_SECRET}" --project="${PROJECT_ID}" | tr -d '\n')"
-if [ -z "${TOKEN}" ]; then
-  echo "[ERROR] empty token from Secret Manager"
-  exit 1
-fi
-
-mkdir -p "${ENV_DIR}"
+# --- 3. Credential env file (mode 600) ---------------------------------------
 umask 077
-cat > "${ENV_FILE}" <<EOF
-# alloy.env — generated by install-alloy-launchagent.sh ($(date '+%Y-%m-%d'))
-# Re-run the installer to refresh the token after rotation.
+mkdir -p "$ENV_DIR"
+cat > "$ENV_FILE" <<EOF
 GRAFANA_ALLOY_REMOTE_WRITE_TOKEN=${TOKEN}
-PROM_REMOTE_WRITE_URL=${PROM_URL}
-PROM_REMOTE_WRITE_USERNAME=${INSTANCE_ID}
-ALLOY_SCRAPE_ADDRESS=${SCRAPE_ADDRESS}
-ALLOY_SCRAPE_METRICS_PATH=${SCRAPE_PATH}
-# ALLOY_SCRAPE_INTERVAL=30s
+GRAFANA_PROM_REMOTE_WRITE_USER=${INSTANCE_ID}
 EOF
-chmod 600 "${ENV_FILE}"
-echo "  wrote: ${ENV_FILE} (600)"
+echo "[install-alloy] wrote ${ENV_FILE} (mode 600)"
 
-echo "[Step 3] Installing LaunchAgent..."
-if [ ! -f "${REPO_DIR}/${PLIST_SRC}" ]; then
-  echo "[ERROR] LaunchAgent template not found at ${REPO_DIR}/${PLIST_SRC}"
-  exit 1
-fi
-cp "${REPO_DIR}/${PLIST_SRC}" "${PLIST_DST}"
+# --- 4. Brew-wrapper config: shim + alloy config ------------------------------
+mkdir -p "$ALLOY_ETC"
+# config.env must resolve the env file regardless of launchd HOME quirks.
+cat > "$ALLOY_ETC/config.env" <<EOF
+# Sourced by /opt/homebrew/opt/alloy/bin/alloy-wrapper (set -a).
+# Real values live in ${ENV_FILE} (mode 600) per TIALA conventions.
+. "${ENV_FILE}"
+EOF
+chmod 600 "$ALLOY_ETC/config.env"
+cp "${REPO_DIR}/scripts/alloy/config.alloy" "$ALLOY_ETC/config.alloy"
+echo "[install-alloy] installed ${ALLOY_ETC}/config.env + config.alloy"
 
-if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
-  /usr/libexec/PlistBuddy -c "Set :WorkingDirectory ${REPO_DIR}" "${PLIST_DST}"
+# --- 5. newsyslog rotation (system dir needs root) ----------------------------
+if sudo -n install -m 644 "$NEWSYSLOG_SRC" "$NEWSYSLOG_DST" 2>/dev/null; then
+  echo "[install-alloy] installed ${NEWSYSLOG_DST}"
 else
-  sed -i '' -e "s#<string>/Users/jun/magi-moomoo</string>#<string>${REPO_DIR}</string>#" "${PLIST_DST}" 2>/dev/null || true
+  echo "[install-alloy] newsyslog entry NOT installed (needs sudo):"
+  echo "    sudo install -m 644 '${NEWSYSLOG_SRC}' '${NEWSYSLOG_DST}'"
 fi
 
-if launchctl list "${PLIST_NAME}" >/dev/null 2>&1; then
-  launchctl unload "${PLIST_DST}" >/dev/null 2>&1 || true
-fi
-launchctl load "${PLIST_DST}"
-
-echo ""
-echo "=== Alloy LaunchAgent installed and loaded ==="
-echo "  Plist:   ${PLIST_DST}"
-echo "  Env:     ${ENV_FILE}"
-echo "  Logs:    /tmp/magi-alloy.stdout.log / /tmp/magi-alloy.stderr.log"
-echo "  Check:   launchctl list ${PLIST_NAME}"
-echo "  Verify:  query the Hosted Metrics datasource for alloy/agent metrics"
-echo "           in Grafana → Explore"
+# --- 6. LaunchAgent -----------------------------------------------------------
+mkdir -p "${HOME}/Library/LaunchAgents" "${HOME}/Library/Logs"
+cp "${REPO_DIR}/scripts/${PLIST_NAME}.plist" "$PLIST_DST"
+launchctl unload "$PLIST_DST" 2>/dev/null || true
+launchctl load "$PLIST_DST"
+echo "[install-alloy] loaded ${PLIST_DST}"
+echo "[install-alloy] done. Verify: launchctl print gui/$(id -u)/${PLIST_NAME}"

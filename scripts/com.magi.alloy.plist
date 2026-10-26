@@ -1,30 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  com.magi.alloy.plist — macOS LaunchAgent for Grafana Alloy on TIALA.
+  com.magi.alloy.plist — macOS launchd agent for the TIALA Grafana Alloy
+  host-metrics agent (prometheus.exporter.unix -> grafanacloud-aka-prom).
 
-  Scrapes the local host-metrics source (netdata's Prometheus endpoint)
-  and remote-writes to Grafana Cloud Hosted Metrics (stack aka).
-
-  Install:
-    bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>
-
+  Install: bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>
   Uninstall:
     launchctl unload ~/Library/LaunchAgents/com.magi.alloy.plist
     rm ~/Library/LaunchAgents/com.magi.alloy.plist
 
-  The token, the Hosted Metrics instance ID and the scrape target live in
-  ~/.config/magi-moomoo/alloy.env on the host (mode 600) — never here.
+  Logs go to ~/Library/Logs/magi-alloy.log (never /tmp — see #93) and are
+  rotated by newsyslog (scripts/alloy/magi-alloy.newsyslog.conf), which
+  SIGTERMs the agent after rotation; KeepAlive restarts it so the new
+  process reopens the fresh log file.
 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.magi.alloy</string>
 
+    <!-- start-alloy.sh validates config (exits 0 on missing config so
+         KeepAlive does not restart-loop), records its PID for newsyslog,
+         then execs the brew alloy-wrapper. -->
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>scripts/start-alloy.sh</string>
+        <string>-c</string>
+        <string>exec /Users/jun/magi-moomoo/scripts/start-alloy.sh &gt;&gt; "$HOME/Library/Logs/magi-alloy.log" 2&gt;&amp;1</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -39,19 +41,13 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Restart on crash only; start-alloy.sh exits 0 on permanent
-         configuration errors so they do not restart-loop. -->
+    <!-- Restart only on failure: exit 0 (config not ready) stays down
+         until the next kickstart or reboot; nonzero exits retry. -->
     <key>KeepAlive</key>
     <dict>
         <key>SuccessfulExit</key>
         <false/>
     </dict>
-
-    <key>StandardOutPath</key>
-    <string>/tmp/magi-alloy.stdout.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>/tmp/magi-alloy.stderr.log</string>
 
     <key>ThrottleInterval</key>
     <integer>30</integer>

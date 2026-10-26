@@ -1,41 +1,65 @@
 // config.alloy — Grafana Alloy configuration for TIALA host metrics.
 //
-// This template is checked into a public repository, so it carries NO
-// secrets, host identifiers, or port numbers. Every value that is
-// credential- or host-specific comes from the process environment —
-// start-alloy.sh sources ~/.config/magi-moomoo/alloy.env (mode 600)
-// before launching `alloy run` with this file.
+// Decision (magi-core#667): collect with prometheus.exporter.unix — it
+// emits node_* series (node-exporter dashboards and the disk-usage alert
+// work), unlike scraping netdata. Live-verified on TIALA 2026-10-26:
+// node_filesystem_*, node_cpu_seconds_total, node_memory_*, node_load*,
+// node_network_*, node_disk_* all reach grafanacloud-aka-prom.
+//
+// This file is checked into a public repository, so it carries NO
+// secrets. Credentials come from the process environment — the brew
+// wrapper (alloy-wrapper) sources /opt/homebrew/etc/alloy/config.env,
+// which in turn sources ~/.config/magi-moomoo/alloy.env (mode 600).
 //
 // Required env vars (see install-alloy-launchagent.sh):
-//   PROM_REMOTE_WRITE_URL            Hosted Metrics remote-write endpoint
-//   PROM_REMOTE_WRITE_USERNAME       Hosted Metrics instance ID (NOT the
-//                                    stack ID — see secrets-inventory.md)
-//   GRAFANA_ALLOY_REMOTE_WRITE_TOKEN glc_ token, metrics:write only
-//   ALLOY_SCRAPE_ADDRESS             host:port of the local metrics source
-//   ALLOY_SCRAPE_METRICS_PATH        Prometheus-format metrics path
-//
-// Optional:
-//   ALLOY_SCRAPE_INTERVAL            default "30s"
+//   GRAFANA_ALLOY_REMOTE_WRITE_TOKEN  glc_ token, metrics:write only
+//   GRAFANA_PROM_REMOTE_WRITE_USER    Hosted Metrics instance ID (NOT the
+//                                     stack ID — see secrets-inventory.md)
 
-// TIALA already runs netdata for host metrics, so we scrape its
-// Prometheus endpoint instead of prometheus.exporter.unix (darwin
-// collector coverage is only partial).
+prometheus.exporter.unix "tiala" {
+	include_exporter_metrics = true
 
-prometheus.scrape "host_metrics" {
-	targets         = [{"__address__" = sys.env("ALLOY_SCRAPE_ADDRESS")}]
-	metrics_path    = sys.env("ALLOY_SCRAPE_METRICS_PATH")
-	scrape_interval = coalesce(sys.env("ALLOY_SCRAPE_INTERVAL"), "30s")
+	filesystem {
+		mount_points_exclude = "^/(dev|private/var/vm|System/Volumes/VM)($|/)"
+		fs_types_exclude     = "^(devfs|autofs|map|synthetic|vmfs)$"
+	}
+}
 
+prometheus.scrape "tiala" {
+	targets         = prometheus.exporter.unix.tiala.targets
+	forward_to      = [prometheus.relabel.tiala.receiver]
+	scrape_interval = "60s"
+}
+
+// Stamp host identity onto every series.
+prometheus.relabel "tiala" {
 	forward_to = [prometheus.remote_write.grafanacloud.receiver]
+
+	rule {
+		target_label = "instance"
+		replacement  = "tiala"
+	}
+	rule {
+		target_label = "host"
+		replacement  = "tiala"
+	}
+	rule {
+		target_label = "job"
+		replacement  = "tiala-host"
+	}
 }
 
 prometheus.remote_write "grafanacloud" {
 	endpoint {
-		url = sys.env("PROM_REMOTE_WRITE_URL")
+		url = "https://prometheus-prod-49-prod-ap-northeast-0.grafana.net/api/prom/push"
 
 		basic_auth {
-			username = sys.env("PROM_REMOTE_WRITE_USERNAME")
+			username = sys.env("GRAFANA_PROM_REMOTE_WRITE_USER")
 			password = sys.env("GRAFANA_ALLOY_REMOTE_WRITE_TOKEN")
 		}
+	}
+
+	wal {
+		truncate_frequency = "2h"
 	}
 }
