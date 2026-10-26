@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.alloy.plist — macOS LaunchAgent for Grafana Alloy on TIALA.
+
+  Scrapes the local host-metrics source (netdata's Prometheus endpoint)
+  and remote-writes to Grafana Cloud Hosted Metrics (stack aka).
+
+  Install:
+    bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.magi.alloy.plist
+    rm ~/Library/LaunchAgents/com.magi.alloy.plist
+
+  The token, the Hosted Metrics instance ID and the scrape target live in
+  ~/.config/magi-moomoo/alloy.env on the host (mode 600) — never here.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.alloy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>scripts/start-alloy.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jun/magi-moomoo</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on crash only; start-alloy.sh exits 0 on permanent
+         configuration errors so they do not restart-loop. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/magi-alloy.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/magi-alloy.stderr.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
