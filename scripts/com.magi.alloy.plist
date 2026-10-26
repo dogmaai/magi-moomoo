@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.alloy.plist — macOS launchd agent for the TIALA Grafana Alloy
+  host-metrics agent (prometheus.exporter.unix -> grafanacloud-aka-prom).
+
+  Install: bash scripts/install-alloy-launchagent.sh <hosted-metrics-instance-id>
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.magi.alloy.plist
+    rm ~/Library/LaunchAgents/com.magi.alloy.plist
+
+  Logs go to ~/Library/Logs/magi-alloy.log (never /tmp — see #93) and are
+  rotated by newsyslog (scripts/alloy/magi-alloy.newsyslog.conf), which
+  SIGTERMs the agent after rotation; KeepAlive restarts it so the new
+  process reopens the fresh log file.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.alloy</string>
+
+    <!-- start-alloy.sh validates config (exits 0 on missing config so
+         KeepAlive does not restart-loop), records its PID for newsyslog,
+         then execs the brew alloy-wrapper. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>exec "@REPO_DIR@/scripts/start-alloy.sh" &gt;&gt; "$HOME/Library/Logs/magi-alloy.log" 2&gt;&amp;1</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@REPO_DIR@</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart only on failure: exit 0 (config not ready) stays down
+         until the next kickstart or reboot; nonzero exits retry. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
