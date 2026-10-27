@@ -1,4 +1,4 @@
-FROM node:20-slim
+FROM node:24.22.1-bookworm-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY package*.json ./
