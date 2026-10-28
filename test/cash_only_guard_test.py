@@ -2,8 +2,7 @@
 """Unit test for the cash-only guard (現物のみ) in bridge/moomoo_bridge.py.
 
 Covers:
-  - SIMULATE is cash-only too: naked SELL / over-cash BUY blocked, but the
-    broker acc_type check is REAL-only (paper account is margin-capable)
+  - SIMULATE retains naked SELL / over-cash BUY without any margin override
   - REAL + guard on: non-CASH / unknown acc_type blocks every order
   - SELL within can_sell_qty passes; SELL beyond it (new short) is blocked
   - SELL with no position / short position only is blocked
@@ -13,7 +12,7 @@ Covers:
   - MOOMOO_ALLOW_MARGIN=true disables the guard; anything else keeps it on
   - /health reports cash_only
 
-Run:  python3 test/real_cash_only_test.py
+Run:  python3 test/cash_only_guard_test.py
 Requires the bridge dependencies (flask, moomoo SDK, pandas). No OpenD needed:
 the trade/quote contexts are replaced with fakes.
 """
@@ -88,6 +87,7 @@ class FakeQuote:
 
 def setup(trd, quote=None, real=True, cash_only=True):
     bridge.IS_REAL = real
+    bridge.TRD_ENV_STR = "REAL" if real else "SIMULATE"
     bridge.TRD_ENV = bridge.TrdEnv.REAL if real else bridge.TrdEnv.SIMULATE
     bridge.ALLOW_REAL_ORDERS = True
     bridge.CASH_ONLY = cash_only
@@ -109,28 +109,34 @@ def order(side, qty, price=100.0, order_type="LIMIT", symbol="AAPL"):
 
 LONG = [{"code": "US.AAPL", "qty": 50.0, "can_sell_qty": 40.0, "position_side": "LONG"}]
 
-# 1. SIMULATE is cash-only as well.
+# 1. SIMULATE retains margin buying and short selling, with guard configured on.
 trd = FakeTrd(acc_type="MARGIN", positions=[])
 setup(trd, real=False)
 r = order("SELL", 10)
-check("SIMULATE naked SELL blocked", r.status_code == 403 and not trd.placed, f"status={r.status_code}")
-check("SIMULATE error names env", "SIMULATE account is cash-only" in r.get_json().get("error", ""))
+check("SIMULATE naked SELL passes", r.status_code == 200 and len(trd.placed) == 1, f"status={r.status_code}")
 trd = FakeTrd(acc_type="MARGIN", positions=LONG)
 setup(trd, real=False)
 check("SIMULATE SELL held long passes (margin-type paper acc ok)",
       order("SELL", 40).status_code == 200 and len(trd.placed) == 1)
 trd = FakeTrd(acc_type="MARGIN", positions=LONG)
 setup(trd, real=False)
-check("SIMULATE SELL beyond held blocked", order("SELL", 41).status_code == 403 and not trd.placed)
+check("SIMULATE SELL beyond held passes", order("SELL", 41).status_code == 200 and len(trd.placed) == 1)
 trd = FakeTrd(acc_type="MARGIN", cash=1_000.0)
 setup(trd, real=False)
 check("SIMULATE BUY within cash passes", order("BUY", 10, price=100.0).status_code == 200)
 trd = FakeTrd(acc_type="MARGIN", cash=1_000.0)
 setup(trd, real=False)
-check("SIMULATE BUY over cash blocked", order("BUY", 11, price=100.0).status_code == 403 and not trd.placed)
+check("SIMULATE BUY over cash passes", order("BUY", 11, price=100.0).status_code == 200 and len(trd.placed) == 1)
 trd = FakeTrd(acc_type="MARGIN", positions=[])
 setup(trd, real=False, cash_only=False)
 check("SIMULATE opt-out allows naked SELL", order("SELL", 1).status_code == 200)
+
+# SIMULATE never consults REAL-only account/cash/position evidence.
+trd = FakeTrd(acc_ret=-1, pos_ret=-1, info_ret=-1)
+setup(trd, real=False)
+check("SIMULATE SELL ignores cash-guard lookup failures", order("SELL", 1).status_code == 200)
+check("SIMULATE BUY ignores cash-guard lookup failures", order("BUY", 1).status_code == 200)
+check("SIMULATE helper skips guard", bridge._cash_only_violation(None, "US.AAPL", "SELL", 1, 100, bridge.OrderType.NORMAL) is None)
 
 # 2. REAL, MARGIN sub-account pinned -> everything blocked.
 trd = FakeTrd(acc_type="MARGIN", positions=LONG)
@@ -236,6 +242,12 @@ trd = FakeTrd(acc_type="MARGIN", positions=[])
 setup(trd, cash_only=False)
 check("CASH_ONLY=False allows naked SELL", order("SELL", 1).status_code == 200)
 
+# REAL order enablement is a separate gate, even when the cash guard is off.
+trd = FakeTrd(acc_type="MARGIN")
+setup(trd, cash_only=False)
+bridge.ALLOW_REAL_ORDERS = False
+check("REAL read-only gate remains active", order("SELL", 1).status_code == 403 and not trd.placed)
+
 # 17. Env parsing: only exact "true" disables.
 import subprocess  # noqa: E402
 bridge_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bridge")
@@ -254,7 +266,7 @@ for v, expected in [(None, True), ("", True), ("false", True), ("TRUE ", False),
 setup(FakeTrd())
 check("health cash_only true (REAL)", client.get("/health").get_json().get("cash_only") is True)
 setup(FakeTrd(), real=False)
-check("health cash_only true (SIMULATE)", client.get("/health").get_json().get("cash_only") is True)
+check("health cash_only false (SIMULATE)", client.get("/health").get_json().get("cash_only") is False)
 setup(FakeTrd(), real=False, cash_only=False)
 check("health cash_only false when opted out", client.get("/health").get_json().get("cash_only") is False)
 
@@ -263,3 +275,4 @@ if failures:
     print(f"{len(failures)} FAILED: {failures}")
     sys.exit(1)
 print("ALL PASS")
+
