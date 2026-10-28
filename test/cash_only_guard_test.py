@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Unit test for the REAL cash-only guard (現物のみ) in bridge/moomoo_bridge.py.
+"""Unit test for the cash-only guard (現物のみ) in bridge/moomoo_bridge.py.
 
 Covers:
-  - SIMULATE is never affected (guard not consulted)
+  - SIMULATE is cash-only too: naked SELL / over-cash BUY blocked, but the
+    broker acc_type check is REAL-only (paper account is margin-capable)
   - REAL + guard on: non-CASH / unknown acc_type blocks every order
   - SELL within can_sell_qty passes; SELL beyond it (new short) is blocked
   - SELL with no position / short position only is blocked
   - BUY within cash passes; BUY over cash (margin buy) is blocked
   - MARKET BUY uses snapshot price + buffer
   - lookup failures fail closed (403), guard exceptions fail closed
-  - MOOMOO_REAL_ALLOW_MARGIN=true disables the guard; anything else keeps it on
-  - /health reports real_cash_only
+  - MOOMOO_ALLOW_MARGIN=true disables the guard; anything else keeps it on
+  - /health reports cash_only
 
 Run:  python3 test/real_cash_only_test.py
 Requires the bridge dependencies (flask, moomoo SDK, pandas). No OpenD needed:
@@ -21,7 +22,7 @@ import os
 import sys
 
 os.environ["BRIDGE_AUTH_TOKEN"] = "t"
-os.environ.pop("MOOMOO_REAL_ALLOW_MARGIN", None)
+os.environ.pop("MOOMOO_ALLOW_MARGIN", None)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bridge"))
 
@@ -89,7 +90,7 @@ def setup(trd, quote=None, real=True, cash_only=True):
     bridge.IS_REAL = real
     bridge.TRD_ENV = bridge.TrdEnv.REAL if real else bridge.TrdEnv.SIMULATE
     bridge.ALLOW_REAL_ORDERS = True
-    bridge.REAL_CASH_ONLY = cash_only
+    bridge.CASH_ONLY = cash_only
     bridge.MOOMOO_ACC_ID = ACC
     bridge._get_trd_ctx = lambda: trd
     bridge._get_quote_ctx = lambda: quote or FakeQuote()
@@ -108,19 +109,35 @@ def order(side, qty, price=100.0, order_type="LIMIT", symbol="AAPL"):
 
 LONG = [{"code": "US.AAPL", "qty": 50.0, "can_sell_qty": 40.0, "position_side": "LONG"}]
 
-# 1. SIMULATE unaffected: naked SELL goes through (guard not consulted).
+# 1. SIMULATE is cash-only as well.
 trd = FakeTrd(acc_type="MARGIN", positions=[])
 setup(trd, real=False)
 r = order("SELL", 10)
-check("SIMULATE naked SELL not blocked", r.status_code == 200 and len(trd.placed) == 1,
-      f"status={r.status_code}")
+check("SIMULATE naked SELL blocked", r.status_code == 403 and not trd.placed, f"status={r.status_code}")
+check("SIMULATE error names env", "SIMULATE account is cash-only" in r.get_json().get("error", ""))
+trd = FakeTrd(acc_type="MARGIN", positions=LONG)
+setup(trd, real=False)
+check("SIMULATE SELL held long passes (margin-type paper acc ok)",
+      order("SELL", 40).status_code == 200 and len(trd.placed) == 1)
+trd = FakeTrd(acc_type="MARGIN", positions=LONG)
+setup(trd, real=False)
+check("SIMULATE SELL beyond held blocked", order("SELL", 41).status_code == 403 and not trd.placed)
+trd = FakeTrd(acc_type="MARGIN", cash=1_000.0)
+setup(trd, real=False)
+check("SIMULATE BUY within cash passes", order("BUY", 10, price=100.0).status_code == 200)
+trd = FakeTrd(acc_type="MARGIN", cash=1_000.0)
+setup(trd, real=False)
+check("SIMULATE BUY over cash blocked", order("BUY", 11, price=100.0).status_code == 403 and not trd.placed)
+trd = FakeTrd(acc_type="MARGIN", positions=[])
+setup(trd, real=False, cash_only=False)
+check("SIMULATE opt-out allows naked SELL", order("SELL", 1).status_code == 200)
 
 # 2. REAL, MARGIN sub-account pinned -> everything blocked.
 trd = FakeTrd(acc_type="MARGIN", positions=LONG)
 setup(trd)
 r = order("BUY", 1)
 check("REAL MARGIN acc BUY blocked", r.status_code == 403 and not trd.placed, f"status={r.status_code}")
-check("blocked_by label", r.get_json().get("blocked_by") == "real_cash_only_guard")
+check("blocked_by label", r.get_json().get("blocked_by") == "cash_only_guard")
 
 # 3. REAL, acc_id not found in acc list -> blocked.
 trd = FakeTrd(positions=LONG)
@@ -217,27 +234,29 @@ check("guard exception fails closed", r.status_code == 403, f"status={r.status_c
 # 16. Explicit opt-out disables guard in REAL.
 trd = FakeTrd(acc_type="MARGIN", positions=[])
 setup(trd, cash_only=False)
-check("REAL_CASH_ONLY=False allows naked SELL", order("SELL", 1).status_code == 200)
+check("CASH_ONLY=False allows naked SELL", order("SELL", 1).status_code == 200)
 
 # 17. Env parsing: only exact "true" disables.
 import subprocess  # noqa: E402
 bridge_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bridge")
 for v, expected in [(None, True), ("", True), ("false", True), ("TRUE ", False), ("yes", True), ("1", True)]:
-    env = {k: val for k, val in os.environ.items() if k != "MOOMOO_REAL_ALLOW_MARGIN"}
+    env = {k: val for k, val in os.environ.items() if k != "MOOMOO_ALLOW_MARGIN"}
     if v is not None:
-        env["MOOMOO_REAL_ALLOW_MARGIN"] = v
+        env["MOOMOO_ALLOW_MARGIN"] = v
     out = subprocess.run(
-        [sys.executable, "-c", "import moomoo_bridge as b; print(b.REAL_CASH_ONLY)"],
+        [sys.executable, "-c", "import moomoo_bridge as b; print(b.CASH_ONLY)"],
         cwd=bridge_dir, env=env, capture_output=True, text=True,
     ).stdout.strip().splitlines()
     got = out[-1] if out else ""
-    check(f"env MOOMOO_REAL_ALLOW_MARGIN={v!r} -> cash_only={expected}", got == str(expected), f"got={got!r}")
+    check(f"env MOOMOO_ALLOW_MARGIN={v!r} -> cash_only={expected}", got == str(expected), f"got={got!r}")
 
-# 18. /health reports the flag.
+# 18. /health reports the flag (both envs).
 setup(FakeTrd())
-check("health real_cash_only true", client.get("/health").get_json().get("real_cash_only") is True)
+check("health cash_only true (REAL)", client.get("/health").get_json().get("cash_only") is True)
 setup(FakeTrd(), real=False)
-check("health real_cash_only false in SIMULATE", client.get("/health").get_json().get("real_cash_only") is False)
+check("health cash_only true (SIMULATE)", client.get("/health").get_json().get("cash_only") is True)
+setup(FakeTrd(), real=False, cash_only=False)
+check("health cash_only false when opted out", client.get("/health").get_json().get("cash_only") is False)
 
 print()
 if failures:
