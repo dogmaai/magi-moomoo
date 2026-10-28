@@ -128,6 +128,16 @@ TRD_ENV_STR = "REAL" if IS_REAL else "SIMULATE"
 # BOTH TRD_ENV=REAL and MOOMOO_ALLOW_REAL_ORDERS=true.
 ALLOW_REAL_ORDERS = os.environ.get("MOOMOO_ALLOW_REAL_ORDERS", "false").lower() == "true"
 
+# Cash-only guard (現物のみ). Policy (Jun, 2026-10-28): REAL is cash-only;
+# SIMULATE retains margin buying and short selling. Only the REAL bridge
+# applies this guard, independently of the caller account configuration.
+# Fail-safe: the guard is ON unless MOOMOO_ALLOW_MARGIN is exactly "true" —
+# unset, empty or misspelled keeps it on. See _cash_only_violation().
+CASH_ONLY = os.environ.get("MOOMOO_ALLOW_MARGIN", "").strip().lower() != "true"
+# Headroom applied to the reference price of a BUY whose execution price is
+# not fixed by the caller (MARKET), so slippage cannot exceed settled cash.
+REAL_BUY_PRICE_BUFFER = 0.02
+
 # Trade unlock credentials for REAL trading (unused in SIMULATE). Never hardcode
 # — supply via env / Secret Manager. Provide plaintext OR a pre-computed MD5.
 TRADE_PASSWORD = os.environ.get("MOOMOO_TRADE_PASSWORD") or None
@@ -441,6 +451,107 @@ def _discover_simulate_acc_id(trd_ctx):
         return 0
 
 
+def _finite(val):
+    """_safe_float that also maps NaN/inf (pandas gaps) to None."""
+    f = _safe_float(val, default=None)
+    return f if f is not None and math.isfinite(f) else None
+
+
+def _real_acc_type(trd_ctx):
+    """Broker-reported acc_type (e.g. 'CASH', 'MARGIN') of the pinned REAL
+    account, or None if it cannot be determined."""
+    ret, data = trd_ctx.get_acc_list()
+    if ret != RET_OK:
+        log.warning("[CASH_ONLY] get_acc_list failed: %s", data)
+        return None
+    for _, row in data.iterrows():
+        try:
+            acc_id = int(row.get("acc_id", 0))
+        except (ValueError, TypeError):
+            continue
+        if acc_id == MOOMOO_ACC_ID and str(row.get("trd_env", "")).upper() == "REAL":
+            return str(row.get("acc_type", "")).upper() or None
+    return None
+
+
+def _cash_only_violation(trd_ctx, code, side_str, qty, price, order_type):
+    """Cash-only guard (現物のみ), REAL only. Returns None when the
+    order is allowed, else a human-readable reason. Every unverifiable case
+    is a violation (fail-closed). Checks:
+
+    1. REAL only: the pinned MOOMOO_ACC_ID must be a broker-confirmed CASH
+       sub-account (the MooMoo JP comprehensive account also has a MARGIN
+       sub-account with its own acc_id; a mis-pin would otherwise silently
+       trade on margin). Not applied in SIMULATE: the dedicated paper
+       account remains margin-capable; this entire guard is skipped.
+    2. SELL only closes/reduces a held long: qty <= can_sell_qty (falls back
+       to the long qty when can_sell_qty is absent). No new shorts.
+    3. BUY only with settled cash: qty x reference price (+buffer for
+       MARKET) <= account cash. No margin buying.
+    """
+    if not IS_REAL:
+        return None
+
+    try:
+        order_qty = float(qty)
+    except (ValueError, TypeError):
+        return f"invalid qty {qty!r}"
+    if not math.isfinite(order_qty) or order_qty <= 0:
+        return f"invalid qty {qty!r}"
+
+    acc_type = _real_acc_type(trd_ctx) if IS_REAL else "CASH"
+    if acc_type != "CASH":
+        return (f"acc_id {MOOMOO_ACC_ID} is not a broker-confirmed CASH account "
+                f"(acc_type={acc_type})")
+
+    if side_str == "SELL":
+        ret, data = trd_ctx.position_list_query(
+            code=code, trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
+        )
+        if ret != RET_OK:
+            return f"position lookup failed: {data}"
+        sellable = 0.0
+        for _, row in data.iterrows():
+            if str(row.get("code", "")) != code:
+                continue
+            side = str(row.get("position_side", "")).upper()
+            held = _finite(row.get("qty")) or 0.0
+            if "SHORT" in side or held <= 0:
+                continue
+            can_sell = _finite(row.get("can_sell_qty"))
+            sellable += max(0.0, can_sell if can_sell is not None else held)
+        if order_qty > sellable:
+            return (f"SELL {order_qty:g} exceeds sellable long position "
+                    f"{sellable:g} (new short entries are not allowed)")
+        return None
+
+    if side_str == "BUY":
+        ref_price = price if (order_type == OrderType.NORMAL and price > 0) else 0.0
+        if ref_price <= 0:
+            quote_ctx = _get_quote_ctx()
+            qret, qdata = quote_ctx.get_market_snapshot([code])
+            if qret != RET_OK or len(qdata) == 0:
+                return f"price lookup failed: {qdata}"
+            last = _finite(qdata.iloc[0].get("last_price")) or 0.0
+            ref_price = max(last, price if price > 0 else 0.0) * (1 + REAL_BUY_PRICE_BUFFER)
+        if ref_price <= 0:
+            return "no reference price available to check cash coverage"
+        ret, data = trd_ctx.accinfo_query(
+            trd_env=TRD_ENV, acc_id=MOOMOO_ACC_ID, refresh_cache=True,
+        )
+        if ret != RET_OK or len(data) == 0:
+            return f"account lookup failed: {data}"
+        row = data.iloc[0]
+        cash = _finite(row.get("us_cash")) or _finite(row.get("cash")) or 0.0
+        notional = order_qty * ref_price
+        if notional > cash:
+            return (f"BUY notional ${notional:,.2f} exceeds cash ${cash:,.2f} "
+                    f"(margin buying is not allowed)")
+        return None
+
+    return f"unsupported side {side_str!r}"
+
+
 def _get_trd_ctx():
     """Return (or create) a persistent trade context.
 
@@ -563,6 +674,7 @@ def health():
         "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
         "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         "real_orders_enabled": (IS_REAL and ALLOW_REAL_ORDERS),
+        "cash_only": IS_REAL and CASH_ONLY,
         "trade_unlocked": _trade_unlocked,
         "auth_required": bool(BRIDGE_AUTH_TOKEN),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -617,6 +729,27 @@ def place_order():
 
     order_type = ORDER_TYPE_MAP.get(order_type_str, OrderType.MARKET)
     code = _to_moomoo_code(symbol)
+
+    # Cash-only guard (REAL only): runs after the REAL enable check
+    # and before any order reaches OpenD. Fail-closed — any lookup failure
+    # blocks the order.
+    if IS_REAL and CASH_ONLY:
+        try:
+            violation = _cash_only_violation(
+                _get_trd_ctx(), code, side_str, qty, price, order_type,
+            )
+        except Exception as ge:
+            log.exception("[ORDER] cash-only guard error")
+            _reset_trd_ctx()
+            violation = f"cash-only guard could not verify the order: {ge}"
+        if violation:
+            log.warning("[ORDER] Blocked by cash-only guard (%s): %s %s x%s — %s", TRD_ENV_STR,
+                        side_str, code, qty, violation)
+            return jsonify({
+                "success": False,
+                "error": f"{TRD_ENV_STR} account is cash-only (現物のみ): {violation}",
+                "blocked_by": "cash_only_guard",
+            }), 403
 
     # Always convert MARKET → LIMIT for paper trading (SIMULATE).
     # MooMoo SDK rejects MARKET orders with "Can only place RTH market
@@ -1320,3 +1453,4 @@ if __name__ == "__main__":
     if IS_REAL:
         log.warning("REAL trading environment active. real_orders_enabled=%s", IS_REAL and ALLOW_REAL_ORDERS)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+
