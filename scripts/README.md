@@ -122,7 +122,7 @@ python3 scripts/moomoo-liquidate.py
 | `MOOMOO_TRADE_PASSWORD` | *(unset)* | Trade unlock password — **REAL only**. Supply via Secret Manager, never hardcode |
 | `MOOMOO_TRADE_PASSWORD_MD5` | *(unset)* | Pre-computed MD5 of the unlock password — alternative to plaintext |
 | `MOOMOO_ALLOW_REAL_ORDERS` | `false` | When `TRD_ENV=REAL`, order placement stays blocked (read-only) unless this is `true` |
-| `MOOMOO_ALLOW_MARGIN` | *(unset)* | Cash-only guard (現物のみ) for SIMULATE and REAL. Unset / anything but exactly `true` keeps the guard **on** |
+| `MOOMOO_ALLOW_MARGIN` | *(unset)* | REAL-only cash guard (現物のみ). Unset / anything but exactly `true` keeps it **on in REAL**. SIMULATE retains margin/shorts without an override |
 
 ### REAL (production) trading notes
 
@@ -132,14 +132,14 @@ python3 scripts/moomoo-liquidate.py
 - The moomoo Japan production comprehensive account is under `SECURITY_FIRM=FUTUJP` and exposes
   separate sub-accounts (MARGIN / CASH / DERIVATIVES) each with its own `acc_id`; pin the intended
   one via `MOOMOO_ACC_ID`.
-- **Cash-only guard (Jun, 2026-10-28)**: SIMULATE and REAL are both operated cash-only (現物のみ) —
-  SIMULATE mirrors REAL even though the paper account itself allows margin/shorts — unless
-  `MOOMOO_ALLOW_MARGIN=true`. Every `/place_order` is checked before reaching OpenD:
+- **Cash-only guard (Jun, 2026-10-28)**: REAL is cash-only (現物のみ) unless
+  `MOOMOO_ALLOW_MARGIN=true`. SIMULATE retains margin buying and short selling; it does not
+  require this override. Every REAL `/place_order` is checked before reaching OpenD:
   (1) REAL only: the pinned `MOOMOO_ACC_ID` must be a broker-confirmed `acc_type=CASH` account;
   (2) SELL qty must be ≤ the long position's `can_sell_qty` (no new shorts);
   (3) BUY qty × price (MARKET: snapshot +2%) must be ≤ account cash (no margin buying).
   Any lookup failure blocks the order (HTTP 403, `blocked_by: cash_only_guard`).
-  `/health` reports `cash_only`.
+  `/health` reports the effective `cash_only`: false in SIMULATE, true in REAL unless overridden.
 - In REAL, the bridge calls `unlock_trade()` using `MOOMOO_TRADE_PASSWORD` (or `_MD5`). Unlock is
   required for order placement; query endpoints work without it.
 - `moomoo-diag.py` lists **all** accounts (SIMULATE + REAL). For REAL balances/positions pass
@@ -284,3 +284,4 @@ call, returns HTTP 200 with successful snapshots, and reports the failures in an
 Before this fallback, one unsupported symbol caused the whole request to fail
 with HTTP 500, which stopped `moomoo_snapshots` ingestion entirely whenever such a
 symbol appeared in the focus list.
+
