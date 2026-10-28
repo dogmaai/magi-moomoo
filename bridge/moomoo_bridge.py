@@ -128,9 +128,9 @@ TRD_ENV_STR = "REAL" if IS_REAL else "SIMULATE"
 # BOTH TRD_ENV=REAL and MOOMOO_ALLOW_REAL_ORDERS=true.
 ALLOW_REAL_ORDERS = os.environ.get("MOOMOO_ALLOW_REAL_ORDERS", "false").lower() == "true"
 
-# Cash-only guard (現物のみ). Policy (Jun, 2026-10-28): both the SIMULATE
-# account and the REAL account are operated cash-only — SIMULATE mirrors
-# REAL even though the MooMoo paper account itself permits margin/shorts.
+# Cash-only guard (現物のみ). Policy (Jun, 2026-10-28): REAL is cash-only;
+# SIMULATE retains margin buying and short selling. Only the REAL bridge
+# applies this guard, independently of the caller account configuration.
 # Fail-safe: the guard is ON unless MOOMOO_ALLOW_MARGIN is exactly "true" —
 # unset, empty or misspelled keeps it on. See _cash_only_violation().
 CASH_ONLY = os.environ.get("MOOMOO_ALLOW_MARGIN", "").strip().lower() != "true"
@@ -475,7 +475,7 @@ def _real_acc_type(trd_ctx):
 
 
 def _cash_only_violation(trd_ctx, code, side_str, qty, price, order_type):
-    """Cash-only guard (現物のみ), SIMULATE and REAL. Returns None when the
+    """Cash-only guard (現物のみ), REAL only. Returns None when the
     order is allowed, else a human-readable reason. Every unverifiable case
     is a violation (fail-closed). Checks:
 
@@ -483,13 +483,15 @@ def _cash_only_violation(trd_ctx, code, side_str, qty, price, order_type):
        sub-account (the MooMoo JP comprehensive account also has a MARGIN
        sub-account with its own acc_id; a mis-pin would otherwise silently
        trade on margin). Not applied in SIMULATE: the dedicated paper
-       account is broker-side margin-capable and is kept (its ledger must
-       not be reattributed), so cash-only is enforced by checks 2-3.
+       account remains margin-capable; this entire guard is skipped.
     2. SELL only closes/reduces a held long: qty <= can_sell_qty (falls back
        to the long qty when can_sell_qty is absent). No new shorts.
     3. BUY only with settled cash: qty x reference price (+buffer for
        MARKET) <= account cash. No margin buying.
     """
+    if not IS_REAL:
+        return None
+
     try:
         order_qty = float(qty)
     except (ValueError, TypeError):
@@ -672,7 +674,7 @@ def health():
         "acc_id_source": "env" if os.environ.get("MOOMOO_ACC_ID") else "auto-discovered",
         "target_sim_acc_type": _SIM_ACC_TYPE_TARGET,
         "real_orders_enabled": (IS_REAL and ALLOW_REAL_ORDERS),
-        "cash_only": CASH_ONLY,
+        "cash_only": IS_REAL and CASH_ONLY,
         "trade_unlocked": _trade_unlocked,
         "auth_required": bool(BRIDGE_AUTH_TOKEN),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -728,10 +730,10 @@ def place_order():
     order_type = ORDER_TYPE_MAP.get(order_type_str, OrderType.MARKET)
     code = _to_moomoo_code(symbol)
 
-    # Cash-only guard (SIMULATE and REAL): runs after the REAL enable check
+    # Cash-only guard (REAL only): runs after the REAL enable check
     # and before any order reaches OpenD. Fail-closed — any lookup failure
     # blocks the order.
-    if CASH_ONLY:
+    if IS_REAL and CASH_ONLY:
         try:
             violation = _cash_only_violation(
                 _get_trd_ctx(), code, side_str, qty, price, order_type,
@@ -1451,3 +1453,4 @@ if __name__ == "__main__":
     if IS_REAL:
         log.warning("REAL trading environment active. real_orders_enabled=%s", IS_REAL and ALLOW_REAL_ORDERS)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=False)
+
