@@ -192,7 +192,12 @@ jobs:
               throw new Error(`Mistral API ${res.status}: ${await res.text()}`);
             }
             const data = await res.json();
-            const reviewText = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(no output)';
+            // mistral-large-4 などの推論モデルは content を文字列ではなくチャンク配列
+            // （thinking + text）で返す。text チャンクのみを連結し、思考過程は投稿しない。
+            const rawContent = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+            const reviewText = (Array.isArray(rawContent)
+              ? rawContent.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('')
+              : (typeof rawContent === 'string' ? rawContent : '')).trim() || '(no output)';
 
             await github.rest.pulls.createReview({
               owner: repo.owner,
