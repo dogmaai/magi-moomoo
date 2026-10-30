@@ -181,7 +181,8 @@ jobs:
               body: JSON.stringify({
                 model: process.env.MISTRAL_MODEL,
                 temperature: 0.2,
-                max_tokens: 2000,
+                // 推論モデルは thinking チャンクも max_tokens を消費するため余裕を持たせる
+                max_tokens: 16000,
                 messages: [
                   { role: 'system', content: 'あなたはシニアソフトウェアエンジニアです。以下のPull Requestのdiffをレビューし、日本語のMarkdownで回答してください。構成: ## 概要 / ## 良い点 / ## 指摘事項（各項目に重要度: 高/中/低を付記）/ ## 推奨アクション。問題がなければ指摘事項に「なし」と明記してください。' },
                   { role: 'user', content: `PRタイトル: ${pr.title}\n\n${diff}` }
@@ -197,7 +198,13 @@ jobs:
             const rawContent = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
             const reviewText = (Array.isArray(rawContent)
               ? rawContent.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('')
-              : (typeof rawContent === 'string' ? rawContent : '')).trim() || '(no output)';
+              : (typeof rawContent === 'string' ? rawContent : '')).trim()
+              || (() => {
+                const choice = (data.choices && data.choices[0]) || {};
+                const kinds = Array.isArray(rawContent) ? rawContent.map((c) => (c && c.type) || typeof c).join(',') : typeof rawContent;
+                return `(no output — finish_reason=${choice.finish_reason}, content=${kinds})`;
+              })();
+            console.log('Mistral finish_reason:', data.choices && data.choices[0] && data.choices[0].finish_reason, 'usage:', JSON.stringify(data.usage || {}));
 
             await github.rest.pulls.createReview({
               owner: repo.owner,
