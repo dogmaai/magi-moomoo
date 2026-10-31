@@ -216,7 +216,11 @@ jobs:
               }
               return `(no output — finish_reason=${choice.finish_reason || 'n/a'}, content=${kinds})`;
             };
-            const reviewText = extractText(rawContent).trim() || describeEmpty(rawContent);
+            const extracted = extractText(rawContent).trim();
+            // 出力上限で途中打ち切りになった場合はレビュー末尾に明示する。
+            const reviewText = extracted
+              ? (choice.finish_reason === 'length' ? `${extracted}\n\n> ⚠️ 出力上限（max_tokens）で途中打ち切り — このレビューは不完全です。` : extracted)
+              : describeEmpty(rawContent);
             // コスト監視用: finish_reason と usage（トークン数のみ、本文は含まない）を記録する。
             console.log('Mistral finish_reason:', choice.finish_reason, 'usage:', JSON.stringify(data.usage || {}));
 
