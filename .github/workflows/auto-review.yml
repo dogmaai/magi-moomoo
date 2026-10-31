@@ -174,6 +174,8 @@ jobs:
 
             const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
               method: 'POST',
+              // 推論モデルは応答に時間がかかるため上限を設け、ハングでランナーを占有しない。
+              signal: AbortSignal.timeout(300000),
               headers: {
                 'Authorization': `Bearer ${process.env.MISTRAL_API_KEY}`,
                 'Content-Type': 'application/json'
@@ -195,16 +197,28 @@ jobs:
             const data = await res.json();
             // mistral-large-4 などの推論モデルは content を文字列ではなくチャンク配列
             // （thinking + text）で返す。text チャンクのみを連結し、思考過程は投稿しない。
-            const rawContent = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-            const reviewText = (Array.isArray(rawContent)
-              ? rawContent.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('')
-              : (typeof rawContent === 'string' ? rawContent : '')).trim()
-              || (() => {
-                const choice = (data.choices && data.choices[0]) || {};
-                const kinds = Array.isArray(rawContent) ? rawContent.map((c) => (c && c.type) || typeof c).join(',') : typeof rawContent;
-                return `(no output — finish_reason=${choice.finish_reason}, content=${kinds})`;
-              })();
-            console.log('Mistral finish_reason:', data.choices && data.choices[0] && data.choices[0].finish_reason, 'usage:', JSON.stringify(data.usage || {}));
+            const choice = (data.choices && data.choices[0]) || {};
+            const rawContent = choice.message && choice.message.content;
+            // 文字列 content はそのまま。チャンク配列は type==='text' のみ連結し、
+            // thinking など text 以外のチャンク（思考過程・将来の新種別）は意図的に投稿しない。
+            const extractText = (content) => {
+              if (typeof content === 'string') return content;
+              if (!Array.isArray(content)) return '';
+              return content.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text).join('');
+            };
+            // 本文が空のときは原因の手がかり（finish_reason と chunk 種別の集計）を出す。
+            const describeEmpty = (content) => {
+              let kinds = typeof content;
+              if (Array.isArray(content)) {
+                const counts = {};
+                for (const c of content) { const k = (c && c.type) || typeof c; counts[k] = (counts[k] || 0) + 1; }
+                kinds = Object.entries(counts).map(([k, n]) => `${k}×${n}`).join(', ') || 'empty array';
+              }
+              return `(no output — finish_reason=${choice.finish_reason || 'n/a'}, content=${kinds})`;
+            };
+            const reviewText = extractText(rawContent).trim() || describeEmpty(rawContent);
+            // コスト監視用: finish_reason と usage（トークン数のみ、本文は含まない）を記録する。
+            console.log('Mistral finish_reason:', choice.finish_reason, 'usage:', JSON.stringify(data.usage || {}));
 
             await github.rest.pulls.createReview({
               owner: repo.owner,
