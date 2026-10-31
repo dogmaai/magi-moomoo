@@ -133,6 +133,7 @@ jobs:
             });
 
       - name: Mistral code review
+        id: mistral_review
         if: success()
         continue-on-error: true
         env:
@@ -232,3 +233,32 @@ jobs:
               body: `${marker}\n## 🧠 Mistral レビュー (\`${process.env.MISTRAL_MODEL}\`)\n\n${reviewText}`
             });
             console.log('Mistral review posted');
+
+      # continue-on-error でジョブは緑のままになるため、Mistral レビューが失敗した
+      # ことを PR 上で見えるようにする（同じ head SHA には 1 回だけ投稿）。
+      - name: Report Mistral review failure
+        if: always() && steps.mistral_review.outcome == 'failure'
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410 # v6.4.1
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const repo = context.repo;
+            const runUrl = `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`;
+            core.warning(`Mistral review failed for ${pr.head.sha.slice(0, 7)} — see ${runUrl}`);
+            const marker = `<!-- mistral-review-failed sha=${pr.head.sha} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: pr.number,
+              per_page: 100
+            });
+            if (comments.some((c) => c.body && c.body.includes(marker))) {
+              console.log('Failure notice already posted for this head SHA');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: pr.number,
+              body: `${marker}\n⚠️ **Mistral レビューが失敗しました**（\`${pr.head.sha.slice(0, 7)}\`）。ジョブは緑のままですが、このコミットの Mistral レビューは投稿されていません。原因はログを確認してください: ${runUrl}`
+            });
