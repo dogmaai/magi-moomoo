@@ -1126,6 +1126,8 @@ def _fetch_latest_klines(quote_ctx, code, start, end, ktype, limit):
     request_history_kline pages oldest-first; walk every page (bounded by
     _BARS_MAX_PAGES) and keep the tail, so the last row is the latest bar.
     """
+    if limit <= 0:
+        return RET_OK, pd.DataFrame()
     frames = []
     page_req_key = None
     for _ in range(_BARS_MAX_PAGES):
@@ -1152,6 +1154,32 @@ def _fetch_latest_klines(quote_ctx, code, start, end, ktype, limit):
     if "time_key" in df.columns:
         df = df.sort_values("time_key", kind="stable")
     return RET_OK, df.tail(limit).reset_index(drop=True)
+
+
+_BARS_WINDOW_ATTEMPTS = 3
+
+
+def _fetch_latest_bars(quote_ctx, code, now, ktype, limit):
+    """Fetch the newest `limit` bars ending at `now`, widening the window if short.
+
+    _bars_window_days() is an estimate; holidays and early closes can leave
+    fewer than `limit` bars in it. Pagination cannot recover rows excluded by
+    `start`, so when the window comes back short the lookback is doubled and
+    re-fetched (at most _BARS_WINDOW_ATTEMPTS windows). A symbol with genuinely
+    less history simply returns what exists after the last attempt.
+    """
+    end_date = now.strftime("%Y-%m-%d")
+    days = _bars_window_days(limit, ktype)
+    ret, data = RET_OK, pd.DataFrame()
+    for attempt in range(_BARS_WINDOW_ATTEMPTS):
+        start_date = (now - timedelta(days=days)).strftime("%Y-%m-%d")
+        ret, data = _fetch_latest_klines(quote_ctx, code, start_date, end_date, ktype, limit)
+        if ret != RET_OK or len(data) >= limit:
+            break
+        if attempt + 1 < _BARS_WINDOW_ATTEMPTS:
+            log.info("[BARS] %s: %d/%d bars in %d-day window; widening", code, len(data), limit, days)
+            days *= 2
+    return ret, data
 
 
 @app.route("/bars", methods=["GET"])
@@ -1181,12 +1209,12 @@ def get_bars():
     # page. Asking for `limit` bars from a fixed 60-day start therefore returned
     # the OLDEST bars of the window (~1 month stale for limit=20), not the most
     # recent ones. Fetch the whole window (paged) and keep the newest `limit`.
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=_bars_window_days(limit, ktype))).strftime("%Y-%m-%d")
+    # One clock read so start/end cannot straddle midnight.
+    now = datetime.now()
 
     try:
         quote_ctx = _get_quote_ctx()
-        ret, data = _fetch_latest_klines(quote_ctx, code, start_date, end_date, ktype, limit)
+        ret, data = _fetch_latest_bars(quote_ctx, code, now, ktype, limit)
 
         if ret != RET_OK:
             log.error("[BARS] request_history_kline failed: %s", data)

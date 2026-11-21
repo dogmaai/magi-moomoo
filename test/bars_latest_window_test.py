@@ -11,6 +11,8 @@ oldest 20 bars (~1 month stale). These tests pin the fixed behaviour:
   - fewer rows than `limit` returns everything available
   - an OpenD error is surfaced as HTTP 500
   - the lookback window grows with `limit`
+  - limit <= 0 returns no bars without calling OpenD
+  - a window left short by holidays is widened and re-fetched
 
 Run:  python3 test/bars_latest_window_test.py
 Requires the bridge dependencies (flask, moomoo SDK, pandas). No OpenD needed:
@@ -54,9 +56,10 @@ def make_rows(n, start=date(2026, 9, 22)):
 class FakeQuote:
     """Emulates OpenD paging: oldest-first, max_count rows per page."""
 
-    def __init__(self, df, fail=False):
+    def __init__(self, df, fail=False, honor_start=False):
         self.df = df
         self.fail = fail
+        self.honor_start = honor_start
         self.calls = []
 
     def request_history_kline(self, code, start=None, end=None, ktype=None,
@@ -65,10 +68,13 @@ class FakeQuote:
                            "max_count": max_count, "page_req_key": page_req_key})
         if self.fail:
             return -1, "quota exceeded", None
+        df = self.df
+        if self.honor_start:
+            df = df[(df["time_key"] >= start) & (df["time_key"] <= end + " 99")].reset_index(drop=True)
         offset = page_req_key or 0
-        page = self.df.iloc[offset:offset + max_count].reset_index(drop=True)
+        page = df.iloc[offset:offset + max_count].reset_index(drop=True)
         nxt = offset + max_count
-        return RET_OK, page, (nxt if nxt < len(self.df) else None)
+        return RET_OK, page, (nxt if nxt < len(df) else None)
 
 
 def call_bars(fake, limit):
@@ -113,7 +119,36 @@ check("limit=2 returns latest pair", [b["c"] for b in bars] == [39.0, 40.0], str
 resp = call_bars(FakeQuote(make_rows(41), fail=True), 20)
 check("OpenD error → 500", resp.status_code == 500, str(resp.status_code))
 
-# 6. Lookback window
+# 6. limit <= 0 → empty, no OpenD call
+fake = FakeQuote(make_rows(41))
+ret, df0 = bridge._fetch_latest_klines(fake, "US.LLY", "2026-01-01", "2026-12-31", bridge.KLType.K_DAY, 0)
+check("limit=0 returns empty without calling OpenD", ret == RET_OK and len(df0) == 0 and not fake.calls)
+resp = call_bars(FakeQuote(make_rows(41)), -5)
+check("negative limit → 200 with no bars", resp.status_code == 200 and resp.get_json()["bars"] == [])
+
+# 7. Short window (holidays / sparse data) is widened until limit is met
+from datetime import datetime  # noqa: E402
+NOW = datetime(2026, 11, 20, 15, 0)
+weekly = pd.DataFrame([{"time_key": f"{NOW.date() - timedelta(days=7 * k)} 00:00:00",
+                        "open": k, "high": k, "low": k, "close": float(-k), "volume": 1}
+                       for k in range(60, -1, -1)])  # oldest first, one bar per week
+fake = FakeQuote(weekly, honor_start=True)
+ret, dfw = bridge._fetch_latest_bars(fake, "US.LLY", NOW, bridge.KLType.K_DAY, 20)
+starts = sorted({c["start"] for c in fake.calls})
+check("widens the window when short", len(starts) == 3, str(starts))
+check("widened fetch returns limit bars", len(dfw) == 20, str(len(dfw)))
+check("widened fetch ends at latest bar", float(dfw["close"].iloc[-1]) == 0.0)
+
+fake = FakeQuote(make_rows(5), honor_start=False)
+ret, dfs = bridge._fetch_latest_bars(fake, "US.NEW", NOW, bridge.KLType.K_DAY, 20)
+check("genuinely short history stops after max attempts",
+      len(dfs) == 5 and len({c['start'] for c in fake.calls}) == bridge._BARS_WINDOW_ATTEMPTS)
+
+fake = FakeQuote(make_rows(41), fail=True)
+ret, _ = bridge._fetch_latest_bars(fake, "US.LLY", NOW, bridge.KLType.K_DAY, 20)
+check("OpenD error is not retried by widening", ret != RET_OK and len(fake.calls) == 1)
+
+# 8. Lookback window
 K = bridge.KLType
 check("daily keeps 60-day floor", bridge._bars_window_days(21, K.K_DAY) == 60)
 check("daily grows with limit", bridge._bars_window_days(200, K.K_DAY) >= 200 * 7 / 5)
