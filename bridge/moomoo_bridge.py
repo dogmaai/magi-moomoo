@@ -57,6 +57,7 @@ import hmac
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify
+import pandas as pd
 
 # OpenTelemetry / Flask instrumentation (lighter than openlit and compatible
 # with moomoo-api's protobuf 3.x pin).
@@ -1092,6 +1093,67 @@ def get_quote():
         return jsonify({"error": str(e)}), 500
 
 
+# Approximate bar length in trading minutes (390 = one regular US session).
+_BAR_MINUTES = {
+    KLType.K_DAY: 390,
+    KLType.K_1M: 1,
+    KLType.K_5M: 5,
+    KLType.K_15M: 15,
+    KLType.K_60M: 60,
+}
+_BARS_PAGE_SIZE = 1000
+_BARS_MAX_PAGES = 50
+
+
+def _bars_window_days(limit, ktype):
+    """Calendar-day lookback that comfortably covers `limit` bars of `ktype`.
+
+    Daily bars keep the historical 60-day minimum; the window grows with
+    `limit` (weekends/holidays ≈ 7/5 calendar days per trading day, plus a
+    margin of 10 days for daily bars and 3 days for intraday bars).
+    """
+    bar_min = _BAR_MINUTES.get(ktype, 390)
+    trading_days = math.ceil(limit * bar_min / 390)
+    is_daily = ktype == KLType.K_DAY
+    floor = 60 if is_daily else 5
+    margin = 10 if is_daily else 3
+    return max(floor, math.ceil(trading_days * 7 / 5) + margin)
+
+
+def _fetch_latest_klines(quote_ctx, code, start, end, ktype, limit):
+    """Return (ret, DataFrame) with the NEWEST `limit` K-lines in [start, end].
+
+    request_history_kline pages oldest-first; walk every page (bounded by
+    _BARS_MAX_PAGES) and keep the tail, so the last row is the latest bar.
+    """
+    frames = []
+    page_req_key = None
+    for _ in range(_BARS_MAX_PAGES):
+        ret, data, page_req_key = quote_ctx.request_history_kline(
+            code,
+            start=start,
+            end=end,
+            ktype=ktype,
+            max_count=_BARS_PAGE_SIZE,
+            page_req_key=page_req_key,
+        )
+        if ret != RET_OK:
+            return ret, data
+        frames.append(data)
+        if page_req_key is None:
+            break
+    else:
+        log.warning("[BARS] %s: stopped after %d pages; returning newest of fetched rows", code, _BARS_MAX_PAGES)
+
+    frames = [f for f in frames if f is not None and len(f) > 0]
+    if not frames:
+        return RET_OK, pd.DataFrame()
+    df = pd.concat(frames, ignore_index=True)
+    if "time_key" in df.columns:
+        df = df.sort_values("time_key", kind="stable")
+    return RET_OK, df.tail(limit).reset_index(drop=True)
+
+
 @app.route("/bars", methods=["GET"])
 def get_bars():
     """
@@ -1115,19 +1177,16 @@ def get_bars():
     ktype = KTYPE_MAP.get(timeframe, KLType.K_DAY)
     code = _to_moomoo_code(symbol)
 
-    # Calculate date range
+    # OpenD returns history K-lines oldest-first from `start`, max_count per
+    # page. Asking for `limit` bars from a fixed 60-day start therefore returned
+    # the OLDEST bars of the window (~1 month stale for limit=20), not the most
+    # recent ones. Fetch the whole window (paged) and keep the newest `limit`.
     end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=_bars_window_days(limit, ktype))).strftime("%Y-%m-%d")
 
     try:
         quote_ctx = _get_quote_ctx()
-        ret, data, _ = quote_ctx.request_history_kline(
-            code,
-            start=start_date,
-            end=end_date,
-            ktype=ktype,
-            max_count=limit,
-        )
+        ret, data = _fetch_latest_klines(quote_ctx, code, start_date, end_date, ktype, limit)
 
         if ret != RET_OK:
             log.error("[BARS] request_history_kline failed: %s", data)
