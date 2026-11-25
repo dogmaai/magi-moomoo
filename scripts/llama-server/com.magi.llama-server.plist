@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.magi.llama-server.plist — macOS launchd agent for the local PrismML
+  llama-server (OpenAI-compatible /v1/chat/completions backend fronted by
+  com.magi.ollama-auth-proxy).
+
+  Install: bash scripts/llama-server/install-llama-server-launchagent.sh
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.magi.llama-server.plist
+    rm ~/Library/LaunchAgents/com.magi.llama-server.plist
+
+  Host-specific paths and ports live in ~/.config/magi-moomoo/llama-server.env
+  (mode 600), never in this public repository. Logs go to
+  ~/Library/Logs/magi-llama-server.log (rotated by newsyslog via SIGTERM;
+  KeepAlive restarts the server so the new process reopens the fresh log).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.magi.llama-server</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>exec "@REPO_DIR@/scripts/llama-server/start-llama-server.sh" &gt;&gt; "$HOME/Library/Logs/magi-llama-server.log" 2&gt;&amp;1</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>@REPO_DIR@</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart only on failure: exit 0 (config/volume not ready) stays down
+         until the next kickstart or reboot; nonzero exits retry. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+</dict>
+</plist>
