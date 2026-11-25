@@ -229,9 +229,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # magi-core's readOllamaStream sees tokens as they are produced.
         nbytes = 0
         outcome = "completed"
+        read_chunk = getattr(resp, "read1", resp.read)
         try:
             while True:
-                chunk = resp.read1(CHUNK)
+                chunk = read_chunk(CHUNK)
                 if not chunk:
                     break
                 nbytes += len(chunk)

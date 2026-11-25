@@ -39,6 +39,7 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+chmod 600 "$ENV_FILE"
 chmod +x "${REPO_DIR}/scripts/llama-server/start-llama-server.sh"
 
 escape_sed_replacement() {

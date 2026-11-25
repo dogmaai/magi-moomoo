@@ -15,6 +15,7 @@
 # process reopens the fresh log file).
 
 set -u
+umask 077
 
 ENV_FILE="${LLAMA_SERVER_ENV_FILE:-$HOME/.config/magi-moomoo/llama-server.env}"
 PID_FILE="${LLAMA_SERVER_PID_FILE:-$HOME/Library/Logs/magi-llama-server.pid}"
