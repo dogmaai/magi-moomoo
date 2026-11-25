@@ -231,7 +231,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         outcome = "completed"
         try:
             while True:
-                chunk = resp.read(CHUNK)
+                chunk = resp.read1(CHUNK)
                 if not chunk:
                     break
                 nbytes += len(chunk)

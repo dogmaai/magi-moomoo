@@ -34,6 +34,7 @@ def _free_port():
 
 class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    sse_release_event = None
 
     def log_message(self, fmt, *args):
         return
@@ -75,15 +76,17 @@ class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         _ = self.rfile.read(length) if length else b""
         if self.path == "/v1/chat/completions":
-            payload = (
-                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
-                b"data: [DONE]\n\n"
-            )
+            self.close_connection = True
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(payload)
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+            self.wfile.flush()
+            if self.sse_release_event is not None:
+                self.sse_release_event.wait(timeout=3.0)
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
             return
         self.send_response(404)
         self.send_header("Content-Length", "0")
@@ -190,21 +193,34 @@ class OllamaAuthProxyTest(unittest.TestCase):
             )
 
     def test_authenticated_sse_stream_passthrough(self):
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.proxy_port}/v1/chat/completions",
-            data=b'{"model":"bonsai","stream":true}',
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=2) as resp:
-            self.assertEqual(resp.status, 200)
-            self.assertIn("text/event-stream", resp.headers.get("Content-Type", ""))
-            body = resp.read().decode("utf-8")
-            self.assertIn('"content":"hi"', body)
-            self.assertIn("data: [DONE]", body)
+        release = threading.Event()
+        _FakeUpstreamHandler.sse_release_event = release
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.proxy_port}/v1/chat/completions",
+                data=b'{"model":"bonsai","stream":true}',
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn(
+                    "text/event-stream", resp.headers.get("Content-Type", "")
+                )
+                # First event must arrive before upstream finishes sending the
+                # response; a buffering proxy would block here until timeout.
+                first_line = resp.readline().decode("utf-8")
+                self.assertIn('"content":"hi"', first_line)
+                self.assertFalse(release.is_set())
+                release.set()
+                rest = resp.read().decode("utf-8")
+                self.assertIn("data: [DONE]", rest)
+        finally:
+            release.set()
+            _FakeUpstreamHandler.sse_release_event = None
 
 
 if __name__ == "__main__":
