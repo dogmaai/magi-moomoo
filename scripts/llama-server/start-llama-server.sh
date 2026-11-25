@@ -90,9 +90,7 @@ if [ -n "${LLAMA_REASONING_BUDGET:-}" ]; then
 fi
 
 if [ -n "${LLAMA_EXTRA_ARGS:-}" ]; then
-  # Intentional word-splitting for caller-supplied CLI flags.
-  # shellcheck disable=SC2206
-  EXTRA_ARR=($LLAMA_EXTRA_ARGS)
+  read -r -a EXTRA_ARR <<< "$LLAMA_EXTRA_ARGS"
   ARGS+=("${EXTRA_ARR[@]}")
 fi
 

@@ -41,10 +41,18 @@ fi
 
 chmod +x "${REPO_DIR}/scripts/llama-server/start-llama-server.sh"
 
+escape_sed_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+HOME_ESC="$(escape_sed_replacement "$HOME")"
+USER_ESC="$(escape_sed_replacement "$(id -un)")"
+REPO_DIR_ESC="$(escape_sed_replacement "$REPO_DIR")"
+
 # --- 1. newsyslog rotation (system dir needs root) ----------------------------
 mkdir -p "${HOME}/Library/Logs"
 NEWSYSLOG_RENDERED="${HOME}/Library/Logs/magi-llama-server.newsyslog.rendered"
-sed -e "s|@HOME@|${HOME}|g" -e "s|@USER@|$(id -un)|g" "$NEWSYSLOG_SRC" > "$NEWSYSLOG_RENDERED"
+sed -e "s|@HOME@|${HOME_ESC}|g" -e "s|@USER@|${USER_ESC}|g" "$NEWSYSLOG_SRC" > "$NEWSYSLOG_RENDERED"
 if sudo -n install -m 644 "$NEWSYSLOG_RENDERED" "$NEWSYSLOG_DST" 2>/dev/null; then
   echo "[install-llama-server] installed ${NEWSYSLOG_DST}"
 else
@@ -54,7 +62,7 @@ fi
 
 # --- 2. LaunchAgent -----------------------------------------------------------
 mkdir -p "${HOME}/Library/LaunchAgents"
-sed -e "s|@HOME@|${HOME}|g" -e "s|@REPO_DIR@|${REPO_DIR}|g" "$PLIST_SRC" > "$PLIST_DST"
+sed -e "s|@HOME@|${HOME_ESC}|g" -e "s|@REPO_DIR@|${REPO_DIR_ESC}|g" "$PLIST_SRC" > "$PLIST_DST"
 launchctl unload "$PLIST_DST" 2>/dev/null || true
 launchctl load "$PLIST_DST"
 echo "[install-llama-server] loaded ${PLIST_DST}"

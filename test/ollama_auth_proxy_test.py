@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +39,8 @@ class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
-        if self.path == "/":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/":
             body = b"Ollama is running"
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
@@ -46,7 +48,7 @@ class _FakeUpstreamHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/health":
+        if path == "/health":
             body = json.dumps({"status": "ok"}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -152,14 +154,19 @@ class OllamaAuthProxyTest(unittest.TestCase):
             self.assertEqual(resp.read(), b"Ollama is running")
 
     def test_unauthenticated_health_liveness_allowed(self):
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{self.proxy_port}/health", timeout=2
-        ) as resp:
-            self.assertEqual(resp.status, 200)
-            self.assertEqual(json.loads(resp.read()), {"status": "ok"})
+        for suffix in ("/health", "/health?probe=1"):
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{self.proxy_port}{suffix}", timeout=2
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(json.loads(resp.read()), {"status": "ok"})
 
     def test_unauthenticated_api_endpoints_rejected(self):
-        for method, path in [("GET", "/v1/models"), ("POST", "/v1/chat/completions")]:
+        for method, path in [
+            ("GET", "/v1/models"),
+            ("GET", "/v1/models?x=/health"),
+            ("POST", "/v1/chat/completions"),
+        ]:
             req = urllib.request.Request(
                 f"http://127.0.0.1:{self.proxy_port}{path}",
                 data=(b"{}" if method == "POST" else None),

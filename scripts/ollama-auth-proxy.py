@@ -161,9 +161,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # magi-core as "Premature close" on 100% of Ollama calls.
         self.close_connection = True
         # Liveness: Ollama's "GET /" banner and llama-server's "GET /health"
-        # stay public so tunnel/health checks work without a token. Everything
-        # else (inference, model listing/mutation) requires Bearer auth.
-        if not (self.command == "GET" and self.path in LIVENESS_PATHS):
+        # stay public (including probe query strings such as /health?probe=1)
+        # so tunnel/health checks work without a token. Everything else
+        # (inference, model listing/mutation) requires Bearer auth.
+        req_path = urllib.parse.urlparse(self.path).path
+        if not (self.command == "GET" and req_path in LIVENESS_PATHS):
             if not self._authorized():
                 self._reject(req_no)
                 return
