@@ -47,6 +47,7 @@ import socketserver
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -55,6 +56,10 @@ AUTH_TOKEN = os.environ.get("OLLAMA_AUTH_TOKEN", "")
 BIND = os.environ.get("OLLAMA_PROXY_BIND", "127.0.0.1")
 PORT = int(os.environ.get("OLLAMA_PROXY_PORT", "11437"))
 TARGET = os.environ.get("OLLAMA_TARGET", "http://127.0.0.1:11434").rstrip("/")
+_PARSED_TARGET = urllib.parse.urlparse(TARGET)
+TARGET_NETLOC = _PARSED_TARGET.netloc or "127.0.0.1:11434"
+TARGET_ORIGIN = f"{_PARSED_TARGET.scheme or 'http'}://{TARGET_NETLOC}"
+LIVENESS_PATHS = frozenset({"/", "/health"})
 LOG_FILE = os.path.expanduser(
     os.environ.get("OLLAMA_PROXY_LOG_FILE",
                    "~/Library/Logs/ollama-auth-proxy.log"))
@@ -155,9 +160,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # and the edge killed it ~100s after the last byte, surfacing to
         # magi-core as "Premature close" on 100% of Ollama calls.
         self.close_connection = True
-        # Liveness: Ollama's own "Ollama is running" banner stays public so
-        # tunnel/health checks work without a token. Everything else is gated.
-        if not (self.command == "GET" and self.path == "/"):
+        # Liveness: Ollama's "GET /" banner and llama-server's "GET /health"
+        # stay public (including probe query strings such as /health?probe=1)
+        # so tunnel/health checks work without a token. Everything else
+        # (inference, model listing/mutation) requires Bearer auth.
+        req_path = urllib.parse.urlparse(self.path).path
+        if not (self.command == "GET" and req_path in LIVENESS_PATHS):
             if not self._authorized():
                 self._reject(req_no)
                 return
@@ -172,8 +180,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         for k, v in self.headers.items():
             if k.lower() not in DROP_REQUEST_HEADERS:
                 req.add_header(k, v)
-        req.add_header("Host", "127.0.0.1:11434")
-        req.add_header("Origin", "http://127.0.0.1:11434")
+        req.add_header("Host", TARGET_NETLOC)
+        req.add_header("Origin", TARGET_ORIGIN)
 
         try:
             resp = urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT_SEC)
@@ -221,9 +229,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # magi-core's readOllamaStream sees tokens as they are produced.
         nbytes = 0
         outcome = "completed"
+        read_chunk = getattr(resp, "read1", resp.read)
         try:
             while True:
-                chunk = resp.read(CHUNK)
+                chunk = read_chunk(CHUNK)
                 if not chunk:
                     break
                 nbytes += len(chunk)
@@ -248,14 +257,19 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
-if not AUTH_TOKEN:
-    sys.stderr.write(
-        "[ollama-auth-proxy] FATAL: OLLAMA_AUTH_TOKEN unset — refusing to "
-        "start an unauthenticated proxy\n")
-    sys.exit(1)
+def main():
+    if not AUTH_TOKEN:
+        sys.stderr.write(
+            "[ollama-auth-proxy] FATAL: OLLAMA_AUTH_TOKEN unset — refusing to "
+            "start an unauthenticated proxy\n")
+        sys.exit(1)
 
-print(f"[ollama-auth-proxy] listening on {BIND}:{PORT} -> {TARGET} "
-      "(bearer auth required)")
-_log("listening on %s:%d -> %s (bearer auth required) log_file=%s"
-     % (BIND, PORT, TARGET, LOG_FILE))
-ThreadingHTTPServer((BIND, PORT), ProxyHandler).serve_forever()
+    print(f"[ollama-auth-proxy] listening on {BIND}:{PORT} -> {TARGET} "
+          "(bearer auth required)")
+    _log("listening on %s:%d -> %s (bearer auth required) log_file=%s"
+         % (BIND, PORT, TARGET, LOG_FILE))
+    ThreadingHTTPServer((BIND, PORT), ProxyHandler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
