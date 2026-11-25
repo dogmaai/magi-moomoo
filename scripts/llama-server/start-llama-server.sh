@@ -96,4 +96,21 @@ fi
 
 mkdir -p "$(dirname "$PID_FILE")"
 echo $$ > "$PID_FILE"
-exec "$LLAMA_SERVER_BIN" "${ARGS[@]}"
+
+# Keep this wrapper as the PID recorded in PID_FILE so SIGTERM from newsyslog
+# gracefully stops llama-server and exits 143 (non-zero). llama-server itself
+# exits 0 on SIGTERM, which launchd KeepAlive{SuccessfulExit=false} would treat
+# as a clean stop and never restart after log rotation.
+child_pid=""
+on_term() {
+  if [ -n "$child_pid" ]; then
+    kill -TERM "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+  fi
+  exit 143
+}
+trap on_term TERM
+
+"$LLAMA_SERVER_BIN" "${ARGS[@]}" &
+child_pid=$!
+wait "$child_pid"
